@@ -57,6 +57,13 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Flutter SDK: winget has no Flutter package here — earlier attempts silently failed. Manual zip install running via `scripts/install_flutter.ps1` → `C:\src\flutter` (see `flutter_install.log`).
 - Standing rule this session: commit + push after every update (remote: `origin/master` @ phoros-code/KREW).
 
+## Session notes (2026-09-20, Phase 4)
+
+- Notifications done (`2e12de6`): SnackBar on task start/complete/fail via SSE + 13 dart tests (unrun — no SDK yet).
+- Security review done: docs endpoints disabled, lone-`&`/NUL blocks, UNC/drive/ADS rejections, consent-record cap; 16 new tests; `pip-audit` clean. 91 passed total.
+- HUMAN REVIEW items (rule 6, undecided): (1) X-RSSI is self-attested — proximity is UX nicety only; (2) 60-min idle bricks token until laptop-side rotate — confirm intended; (3) `rate_limit_per_minute: 60` declared but unenforced — needs token-bucket middleware before hostile-network use; (4) `/events` replays full history to any token-holder — keep logs payload-free.
+- Flutter 3.47.5 zip still downloading (`flutter_install.log`); then analyze/test/run.
+
 ## Session notes (2026-09-19)
 
 - Done: full Phase 0 per PROMPTS.md. License picked: MIT (`LICENSE` added).
