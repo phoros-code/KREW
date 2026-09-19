@@ -45,6 +45,9 @@ Every status dot/badge in this app must have an entry here. If it's not in this 
 | proximity NEAR | success `#3A8B5C` + text label "NEAR" | Full control available | status header (always visible) |
 | proximity FAR | warning `#D9932A` + text label "FAR" | Notifications only, commands blocked | status header (always visible) |
 | connection offline | error `#C4453D` + text label | No route to laptop | status header |
+| connection online | success `#3A8B5C` + text label "ONLINE" | Route to laptop alive | status header |
+| connection connecting | warning `#D9932A` + text label | Opening live stream | status header |
+| header task summary | primary `#1E5F4A` + count text ("N RUNNING" / "IDLE") | N tasks active vs idle | status header |
 | listening | accent `#E8A33D` pulsing with audio level | Mic recording after wake word | chat/voice UI |
 
 ---

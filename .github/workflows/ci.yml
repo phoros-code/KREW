@@ -1,0 +1,70 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: python (3.12) — pytest + pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      # NOTE: deliberately NOT `pip install -e .[dev]`.
+      # That would pull the full `dependencies` list from pyproject.toml
+      # (crewai + langchain chain), which is slow and unnecessary for CI.
+      # TESTING.md says keep CI fast enough to run before every checkpoint,
+      # so pytest runs against the light pinned set in requirements.txt.
+      - name: Install light dependency set (no crewai)
+        run: |
+          python -m pip install -e . --no-deps
+          python -m pip install -r requirements.txt
+          python -m pip install "pip-audit>=2.7.0"
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+      # warn-not-fail: the OSV advisory DB may be unreachable from runners
+      # (offline / rate-limited). Audit is advisory only — pytest is the gate,
+      # so a DB outage must not turn the python job red.
+      - name: pip-audit (advisory, warn-not-fail)
+        run: python -m pip-audit
+        continue-on-error: true
+
+  flutter:
+    name: flutter — analyze + test
+    runs-on: ubuntu-latest
+    # Separate job so Python results report independently of Flutter.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: flutter --version
+        run: flutter --version
+
+      - name: flutter pub get
+        run: flutter pub get
+        working-directory: mobile
+
+      - name: flutter analyze
+        run: flutter analyze
+        working-directory: mobile
+
+      - name: flutter test
+        run: flutter test
+        working-directory: mobile

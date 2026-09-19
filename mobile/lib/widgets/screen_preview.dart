@@ -167,8 +167,8 @@ class _ScreenPreviewState extends State<ScreenPreview> {
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               const SizedBox(
-                width: 24,
-                height: 24,
+                width: BuddySpacing.s5,
+                height: BuddySpacing.s5,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
                   color: BuddyColors.primary,

@@ -35,19 +35,23 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
 
     final Color connColor;
     final String connLabel;
+    final String connSemantic;
     final IconData connIcon;
     switch (connection) {
       case BuddyConnection.online:
         connColor = BuddyColors.success;
         connLabel = 'ONLINE';
+        connSemantic = 'Connection online — laptop reachable';
         connIcon = Icons.wifi;
       case BuddyConnection.offline:
         connColor = BuddyColors.error;
         connLabel = 'OFFLINE';
+        connSemantic = 'Connection offline — no route to laptop';
         connIcon = Icons.wifi_off;
       case BuddyConnection.unknown:
         connColor = BuddyColors.warning;
         connLabel = 'CONNECTING';
+        connSemantic = 'Connection connecting — opening the live stream';
         connIcon = Icons.wifi_find;
     }
 
@@ -70,29 +74,46 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
                   : 'Proximity far — notifications only, commands blocked',
             ),
             const SizedBox(width: BuddySpacing.s2),
-            _Pill(color: connColor, icon: connIcon, label: connLabel),
-            const Spacer(),
-            Icon(
-              runningCount > 0 ? Icons.sync : Icons.check_circle_outline,
-              size: 16,
-              color: runningCount > 0
-                  ? BuddyColors.primary
-                  : (dark
-                        ? BuddyColors.inkMutedOnDark
-                        : BuddyColors.inkMutedOnLight),
+            _Pill(
+              color: connColor,
+              icon: connIcon,
+              label: connLabel,
+              semantic: connSemantic,
             ),
-            const SizedBox(width: BuddySpacing.s2),
-            Text(
-              runningCount > 0 ? '$runningCount RUNNING' : 'IDLE',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.6,
-                color: runningCount > 0
-                    ? BuddyColors.primary
-                    : (dark
-                          ? BuddyColors.inkMutedOnDark
-                          : BuddyColors.inkMutedOnLight),
+            const Spacer(),
+            Semantics(
+              label: runningCount > 0
+                  ? '$runningCount tasks running'
+                  : 'No tasks running',
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Icon(
+                    runningCount > 0
+                        ? Icons.sync
+                        : Icons.check_circle_outline,
+                    size: 16,
+                    color: runningCount > 0
+                        ? BuddyColors.primary
+                        : (dark
+                              ? BuddyColors.inkMutedOnDark
+                              : BuddyColors.inkMutedOnLight),
+                  ),
+                  const SizedBox(width: BuddySpacing.s2),
+                  Text(
+                    runningCount > 0 ? '$runningCount RUNNING' : 'IDLE',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.6,
+                      color: runningCount > 0
+                          ? BuddyColors.primary
+                          : (dark
+                                ? BuddyColors.inkMutedOnDark
+                                : BuddyColors.inkMutedOnLight),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],

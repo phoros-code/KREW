@@ -102,7 +102,7 @@ class _CommandBarState extends State<CommandBar> {
             ),
             const SizedBox(width: BuddySpacing.s2),
             SizedBox(
-              height: 48,
+              height: BuddySpacing.s7,
               child: ElevatedButton(
                 onPressed: active ? _submit : null,
                 child: busy

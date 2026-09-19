@@ -201,8 +201,8 @@ class _BuddyAppState extends State<BuddyApp> {
           ? const Scaffold(
               body: Center(
                 child: SizedBox(
-                  width: 24,
-                  height: 24,
+                  width: BuddySpacing.s5,
+                  height: BuddySpacing.s5,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
               ),

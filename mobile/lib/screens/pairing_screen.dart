@@ -100,7 +100,7 @@ class _PairingScreenState extends State<PairingScreen> {
   String _humanize(BuddyApiException e) {
     switch (e.code) {
       case 'unauthorized':
-        return 'Wrong token — the laptop said “${e.message}” Check for a trailing space, or generate a fresh token on the laptop and try again.';
+        return 'Wrong token — the laptop said "${e.message}". Check for a trailing space, or generate a fresh token on the laptop and try again.';
       case 'locked_out':
         return 'Too many wrong attempts — the laptop is temporarily locked. Wait a few minutes, then try again.';
       case 'unreachable':
@@ -192,6 +192,7 @@ class _PairingScreenState extends State<PairingScreen> {
                 hintText: 'paste the token from the laptop',
                 prefixIcon: const Icon(Icons.key_outlined, size: 18),
                 suffixIcon: IconButton(
+                  tooltip: _obscured ? 'Show token' : 'Hide token',
                   icon: Icon(
                     _obscured ? Icons.visibility_outlined : Icons.visibility_off_outlined,
                     size: 18,
@@ -262,7 +263,7 @@ class _PairingScreenState extends State<PairingScreen> {
 
             const SizedBox(height: BuddySpacing.s5),
             SizedBox(
-              height: 48,
+              height: BuddySpacing.s7,
               child: ElevatedButton(
                 onPressed: _testing ? null : _testAndSave,
                 child: _testing
