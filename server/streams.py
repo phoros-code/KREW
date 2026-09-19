@@ -23,10 +23,20 @@ generator sleeps only for the remainder of the target frame interval
 
 v1 limitation (documented in main.py): consent approval is a simple
 laptop-side HTTP endpoint. A real OS-level prompt is a v1.1 upgrade.
+
+Response transport note: ``MJPEGResponse`` below subclasses Starlette's
+``Response`` (so FastAPI serves it directly) but implements its own
+``__call__`` instead of using ``StreamingResponse``. Rationale: Starlette ≥1.x
+``StreamingResponse`` blocks on ``await receive()`` (listen_for_disconnect)
+before emitting anything, which deadlocks against in-process ASGI test
+transports that cannot deliver ``http.disconnect`` until the response
+completes. Polling disconnect with a short timeout streams correctly on real
+servers (uvicorn delivers disconnect promptly) AND under test transports.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 import time
@@ -35,6 +45,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from io import BytesIO
 from typing import Callable, Iterator
+
+from starlette.responses import Response as _StarletteResponse
 
 try:
     from PIL import Image as _PILImage
@@ -209,6 +221,63 @@ def format_frame(jpeg: bytes, boundary: str = BOUNDARY) -> bytes:
         f"Content-Length: {len(jpeg)}\r\n\r\n"
     ).encode("ascii")
     return header + jpeg + b"\r\n"
+
+
+async def _client_gone(receive: Callable[[], object], timeout: float = 0.05) -> bool:
+    """Non-blocking disconnect poll. Never hangs: a stalled transport reads as connected."""
+    try:
+        message = await asyncio.wait_for(receive(), timeout=timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        return False
+    except Exception:
+        return True  # fail closed on transport errors
+    return isinstance(message, dict) and message.get("type") == "http.disconnect"
+
+
+class MJPEGResponse(_StarletteResponse):
+    """Multipart MJPEG response with per-frame disconnect + consent checks.
+
+    Subclasses Starlette's Response so FastAPI serves it as-is; streams the
+    body manually so no code path ever blocks unconditionally on ``receive()``.
+    One frame is pulled per iteration (slow clients drop frames, memory stays
+    bounded); the generator is closed on exit so capture stops promptly.
+    """
+
+    media_type = MJPEG_MEDIA_TYPE
+
+    def __init__(self, gen_factory: Callable[[], Iterator[bytes]]) -> None:
+        super().__init__(content=None, status_code=200, media_type=self.media_type)
+        self.gen_factory = gen_factory
+
+    async def __call__(self, scope: object, receive: Callable[[], object], send: Callable[[object], object]) -> None:
+        if not isinstance(scope, dict) or scope.get("type") != "http":
+            raise RuntimeError("MJPEGResponse requires an HTTP scope")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", MJPEG_MEDIA_TYPE.encode("latin-1")),
+                    (b"cache-control", b"no-cache"),
+                ],
+            }
+        )
+        gen = self.gen_factory()
+        try:
+            while True:
+                if await _client_gone(receive):
+                    logger.info("screen stream stopping: client disconnected")
+                    break
+                chunk = await asyncio.to_thread(next, gen, None)
+                if chunk is None:  # exhausted: consent lapsed or capture failing
+                    break
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+        finally:
+            try:
+                gen.close()
+            except Exception:
+                pass
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
 def mjpeg_generator(

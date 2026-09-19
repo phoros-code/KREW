@@ -14,6 +14,7 @@ dependencies = [
   "uvicorn>=0.30.0",
   "sse-starlette>=2.1.0",
   "mss>=9.0.0",
+  "pillow>=11.0.0",
 ]
 
 [project.optional-dependencies]

@@ -223,10 +223,11 @@ def create_app(
             raise _http_error(403, ERROR_CONSENT_DENIED)
         if status is not streams.ConsentStatus.APPROVED:
             raise _http_error(403, ERROR_CONSENT_REQUIRED)
-        return StreamingResponse(
-            streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id)),
-            media_type=streams.MJPEG_MEDIA_TYPE,
-        )
+
+        def build_gen():
+            return streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id))
+
+        return streams.MJPEGResponse(build_gen)
 
     return app
 

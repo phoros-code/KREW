@@ -19,6 +19,7 @@ mss==10.2.0
 numpy==2.5.3
 ollama==0.6.2
 packaging==26.3
+pillow==12.3.0
 pluggy==1.6.0
 pydantic==2.13.5
 pydantic_core==2.46.5

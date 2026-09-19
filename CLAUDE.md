@@ -39,8 +39,16 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - [x] Phase 0 — Foundations (done 2026-09-19: scaffold + files/shell/web_search tools + planner caps + ollama-direct orchestrator + CLI; 27 tests pass, 1 skip (win symlink priv); live `buddy "research ..."` verified vs qwen2.5-coder:7b)
 - [x] Phase 1 — Voice loop (code done 2026-09-19: wake/stt/tts/voice_loop + 7 loop tests; hardware verification pending — mic + `pip install -e .[voice]` + Piper model download + live out-loud demo)
 - [x] Phase 2 — Control server (code done 2026-09-19: token auth + lockout/idle/rotation, /command /events /health, proximity fail-closed, JSONL events, TLS gen_cert + serve + pair_device scripts; HTTPS verified locally via curl — /health ok, /command queued, unauth 401; phone-on-LAN check pending)
-- [ ] Phase 3 — Mobile app MVP
+- [x] Phase 3 — Mobile app MVP (code done 2026-09-20: Flutter pairing/chat/tasks/preview per DESIGN.md + server /screen MJPEG with consent flow; 75 tests pass in ~2s incl. real-socket stream test; SDK verification pending — Flutter winget install retrying, then `flutter analyze/test/run`)
 - [ ] Phase 4 — Proximity & polish
+
+## Session notes (2026-09-20)
+
+- Mobile app agent wrote 21 files under `mobile/` (pairing, chat, task list, preview placeholder, secure storage, SSE client, proximity fail-closed).
+- Streams agent wrote `server/streams.py` (consent manager, MJPEG gen, capture) + wired `/screen` + consent endpoints + 24 tests.
+- Fixed a real hang: Starlette 1.6 `StreamingResponse` deadlocks vs httpx 0.28 ASGI transport (which buffers whole responses — infinite streams untestable through it). Added `MJPEGResponse` (custom ASGI response, timeout-polled disconnect) + direct-ASGI stream tests + one real-socket uvicorn test.
+- Env: `venv312/` fully installed incl. CrewAI (74 tests passed there); models `qwen2.5:3b` + `llama3.1:8b` + `qwen2.5-coder:7b` all pulled. Pillow 12.3.0 added to pyproject/requirements.
+- Next: verify Flutter SDK (`flutter analyze`, `flutter test`, device run), then Phase 4 (BT RSSI, notifications, hardening, v0.1.0).
 
 ## Session notes (2026-09-19)
 
