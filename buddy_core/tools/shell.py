@@ -21,7 +21,11 @@ from dataclasses import dataclass
 from buddy_core.config import ShellConfig
 
 # Independent of config/tools.yaml — always blocked (SECURITY.md).
-_BUILTIN_DENY_CHARS = (";", "&&", "||", "|", "$", "`", ">", "<", "\n", "\r")
+# NOTE: "&" covers both lone-& (cmd.exe chaining: `a & b`) and "&&";
+# "|" likewise covers "||". "\x00" turns a would-be ValueError from
+# subprocess into a clean ShellDenied. shell=False is the real barrier;
+# this list is defense in depth.
+_BUILTIN_DENY_CHARS = (";", "&", "&&", "||", "|", "$", "`", ">", "<", "\n", "\r", "\x00")
 
 
 class ShellDenied(ValueError):

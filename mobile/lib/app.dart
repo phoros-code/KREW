@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'models/buddy_event.dart';
 import 'models/task_item.dart';
+import 'models/task_notification.dart';
 import 'screens/chat_screen.dart';
 import 'screens/pairing_screen.dart';
 import 'screens/preview_screen.dart';
@@ -13,6 +14,7 @@ import 'services/proximity_service.dart';
 import 'services/secure_store.dart';
 import 'theme/buddy_theme.dart';
 import 'widgets/status_header.dart';
+import 'widgets/task_notification_banner.dart';
 
 /// App shell: owns pairing state, the SSE subscription, the folded task
 /// list, and proximity state. Every tab renders inside the console-column
@@ -42,6 +44,8 @@ class _BuddyAppState extends State<BuddyApp> {
   String? _streamError;
   bool _streamConnected = false;
   int _connectAttempt = 0;
+  final GlobalKey<ScaffoldMessengerState> _messengerKey =
+      GlobalKey<ScaffoldMessengerState>();
 
   @override
   void initState() {
@@ -93,6 +97,7 @@ class _BuddyAppState extends State<BuddyApp> {
   Future<void> _onUnpair() async {
     await _store.clear();
     await _subscription?.cancel();
+    _messengerKey.currentState?.clearSnackBars();
     _subscription = null;
     _api?.close();
     _api = null;
@@ -124,6 +129,13 @@ class _BuddyAppState extends State<BuddyApp> {
     _subscription = api.watchEvents().listen(
       (BuddyEvent event) {
         if (!mounted || attempt != _connectAttempt) return;
+        // Fallback title must be read BEFORE folding: completed/failed
+        // frames carry result/error, not the command text.
+        final String? taskId = event.taskId;
+        final TaskNotification? notice = TaskNotification.fromEvent(
+          event,
+          fallbackTitle: taskId == null ? null : _tasks.byId(taskId)?.title,
+        );
         setState(() {
           _streamConnected = true;
           _streamError = null;
@@ -132,6 +144,21 @@ class _BuddyAppState extends State<BuddyApp> {
           _tasks.applyEvent(event);
         });
         _proximity.setOnline();
+        // In-app notification (Phase 4.3): a floating SnackBar over the
+        // current console-column screen — no new layout shape, and it works
+        // in FAR (notifications-only) mode too. "View" jumps to the Tasks
+        // tab; the notice itself already carries the result/error summary.
+        final ScaffoldMessengerState? messenger =
+            _messengerKey.currentState;
+        if (notice != null && messenger != null) {
+          showTaskNotification(
+            messenger,
+            notification: notice,
+            onView: () {
+              if (mounted) setState(() => _tab = 2);
+            },
+          );
+        }
       },
       onError: (Object err) {
         if (!mounted || attempt != _connectAttempt) return;
@@ -195,6 +222,7 @@ class _BuddyAppState extends State<BuddyApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Everyday Buddy',
+      scaffoldMessengerKey: _messengerKey,
       theme: BuddyTheme.light(),
       darkTheme: BuddyTheme.dark(),
       home: _booting

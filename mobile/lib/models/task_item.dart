@@ -64,6 +64,10 @@ class TaskList {
     return sorted;
   }
 
+  /// Lookup by id for notification fallback titles (completed/failed SSE
+  /// frames carry result/error, not the command text). Pure — unit tested.
+  TaskItem? byId(String id) => _items[id];
+
   int get runningCount {
     return _items.values
         .where(

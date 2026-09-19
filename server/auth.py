@@ -108,4 +108,8 @@ class AuthState:
         data.setdefault("auth", {})["token"] = new_token
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass  # Windows ACLs — file still gitignored; see .gitignore
         return new_token

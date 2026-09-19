@@ -69,6 +69,11 @@ JPEG_SOI = b"\xff\xd8"  # every emitted frame must start with this
 PENDING_TTL_SECONDS = 300.0  # unactioned request expires after 5 min
 GRANT_TTL_SECONDS = 900.0  # approved grant expires after 15 min
 
+# Hard cap on consent records. TTL purging bounds lifetime but not count —
+# an authenticated caller could otherwise spam /screen/consent to grow
+# memory. Eviction is fail-closed (a dropped grant just stops a stream).
+MAX_CONSENT_RECORDS = 256
+
 
 class ConsentStatus(str, Enum):
     PENDING = "pending"
@@ -92,6 +97,7 @@ class ConsentManager:
 
     pending_ttl: float = PENDING_TTL_SECONDS
     grant_ttl: float = GRANT_TTL_SECONDS
+    max_records: int = MAX_CONSENT_RECORDS
     now: Callable[[], float] = field(default_factory=lambda: time.monotonic)
     new_id: Callable[[], str] = field(default_factory=lambda: (lambda: uuid.uuid4().hex))
     _records: dict[str, _ConsentRecord] = field(default_factory=dict, init=False, repr=False)
@@ -102,6 +108,7 @@ class ConsentManager:
         consent_id = self.new_id()
         with self._lock:
             self._purge_locked()
+            self._evict_if_full_locked()
             self._records[consent_id] = _ConsentRecord(
                 status=ConsentStatus.PENDING, created_at=self.now()
             )
@@ -152,6 +159,30 @@ class ConsentManager:
     def is_approved(self, consent_id: str) -> bool:
         """True only for a live APPROVED grant. Everything else is False."""
         return self.status_of(consent_id) is ConsentStatus.APPROVED
+
+    def _evict_if_full_locked(self) -> None:
+        """Cap record count so consent-request spam can't grow memory.
+
+        Caller holds _lock. Evicts the oldest non-live record first; only if
+        every record is a live APPROVED grant is the oldest grant dropped
+        (fail closed — its stream stops on the next per-frame re-check).
+        """
+        if len(self._records) < self.max_records:
+            return
+        oldest_pending: str | None = None
+        oldest_pending_at = float("inf")
+        oldest_at = float("inf")
+        oldest_any: str | None = None
+        for cid, record in self._records.items():
+            if record.created_at < oldest_at:
+                oldest_at = record.created_at
+                oldest_any = cid
+            if record.status is not ConsentStatus.APPROVED and record.created_at < oldest_pending_at:
+                oldest_pending_at = record.created_at
+                oldest_pending = cid
+        victim = oldest_pending if oldest_pending is not None else oldest_any
+        if victim is not None:
+            del self._records[victim]
 
     def _purge_locked(self) -> None:
         """Drop expired records so state stays bounded. Caller holds _lock."""

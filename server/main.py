@@ -106,7 +106,10 @@ def create_app(
     prox_cfg = load_proximity_config(security_path)
     log_path = Path(event_log) if event_log else CONFIG_DIR.parent / "logs" / "events.jsonl"
 
-    app = FastAPI(title="Everyday Buddy control server")
+    # SECURITY.md: no unauthenticated endpoint except /health. FastAPI's
+    # interactive docs + openapi.json would otherwise expose the full route
+    # map (including /screen consent paths) without a token — disable them.
+    app = FastAPI(title="Everyday Buddy control server", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth_state = state
     consent = streams.ConsentManager()
     app.state.consent_manager = consent
