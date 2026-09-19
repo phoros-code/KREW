@@ -17,18 +17,18 @@ This is the design contract your AI coding agent reads before generating or edit
 - Status colors (documented meaning required — see "Status meaning table" below): success `#3A8B5C`, warning `#D9932A`, error `#C4453D`
 
 **Typography**
-- Headline/display: *(pick one, not Inter)* — e.g. Space Grotesk, Söhne, or a font that matches your own taste, chosen on purpose
-- Body: a distinct pairing from the headline font — not the same font at a different weight
-- Monospace (for logs, tokens, command output): a real monospace, e.g. JetBrains Mono or IBM Plex Mono
+- Headline/display: Space Grotesk (geometric, technical without being generic; chosen for the "trusted console" feel)
+- Body: IBM Plex Sans (humanist, distinct from the headline; readable at small sizes for logs)
+- Monospace (for logs, tokens, command output): JetBrains Mono
 
 **Spacing scale**
 - Base unit: 4px. Scale: 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64. Don't invent arbitrary values outside this scale.
 
 **Corner radius**
-- One value for interactive elements (buttons, inputs): pick one, e.g. 8px. One value for containers: e.g. 12px. Don't mix five different radii across the app.
+- Interactive (buttons, inputs): 8px. Containers: 12px. Don't mix five different radii across the app.
 
 **One layout primitive**
-- Decide what *this* app's primitive is — it should come from what the app actually does (live status + logs + a video preview + a proximity signal), not a generic admin dashboard template. Write the decision down here once you've made it, and repeat it across screens rather than inventing a new layout shape per screen.
+- "Console column": every screen is a single column — a 56px status header (proximity + connection + task state), a scrollable content region, and (where input exists) a fixed bottom command bar. No sidebars, no card grids. Screens differ by what's in the content region (pairing form, chat log, task rows, video preview), never by layout shape.
 
 ---
 
@@ -38,7 +38,14 @@ Every status dot/badge in this app must have an entry here. If it's not in this 
 
 | Indicator | Color | Meaning | Where it appears |
 |---|---|---|---|
-| *(fill in as you build — e.g. "task running")* | | | |
+| task queued | warning `#D9932A` | Command accepted, waiting to run | task list, chat |
+| task running | primary `#1E5F4A` | Agent actively working | task list, chat, status header |
+| task done | success `#3A8B5C` | Completed with a result | task list, chat |
+| task failed | error `#C4453D` | Failed, see error text | task list, chat |
+| proximity NEAR | success `#3A8B5C` + text label "NEAR" | Full control available | status header (always visible) |
+| proximity FAR | warning `#D9932A` + text label "FAR" | Notifications only, commands blocked | status header (always visible) |
+| connection offline | error `#C4453D` + text label | No route to laptop | status header |
+| listening | accent `#E8A33D` pulsing with audio level | Mic recording after wake word | chat/voice UI |
 
 ---
 

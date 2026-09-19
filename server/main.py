@@ -3,7 +3,8 @@
 - GET  /health   — unauthenticated, minimal ({status: ok} only)
 - POST /command  — near only, queues orchestrator.run() in the background
 - GET  /events   — near or far, SSE tail of logs/events.jsonl
-- GET  /screen   — near only, 501 until the Phase 3 MJPEG implementation
+- GET  /screen   — near only + explicit consent grant, MJPEG stream
+- POST /screen/consent (+ /{id}/approve, /{id}/deny) — consent flow, near only
 
 Every route except /health requires the bearer dependency from server.auth.
 Proximity failures default to FAR (fail closed — SECURITY.md).
@@ -22,11 +23,19 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from buddy_core.config import CONFIG_DIR
+from server import streams
 from server.auth import SECURITY_PATH, AuthState, load_auth_settings
 
 ERROR_UNAUTHORIZED = {"error": {"code": "unauthorized", "message": "Invalid or expired token"}}
 ERROR_FORBIDDEN = {"error": {"code": "forbidden", "message": "Requires near proximity"}}
 ERROR_LOCKED = {"error": {"code": "locked_out", "message": "Too many failed attempts — try again later"}}
+ERROR_CONSENT_REQUIRED = {
+    "error": {"code": "consent_required", "message": "Screen sharing requires explicit on-device consent"}
+}
+ERROR_CONSENT_DENIED = {
+    "error": {"code": "consent_denied", "message": "Screen share request was denied"}
+}
+ERROR_CONSENT_NOT_FOUND = {"error": {"code": "not_found", "message": "Unknown consent request"}}
 
 
 def load_proximity_config(path: str | Path = SECURITY_PATH) -> dict:
@@ -99,6 +108,8 @@ def create_app(
 
     app = FastAPI(title="Everyday Buddy control server")
     app.state.auth_state = state
+    consent = streams.ConsentManager()
+    app.state.consent_manager = consent
 
     @app.exception_handler(_http_error)
     async def handle_http_error(_: Request, exc: _http_error) -> JSONResponse:
@@ -163,12 +174,58 @@ def create_app(
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
+    @app.post("/screen/consent")
+    def screen_consent(_auth: AuthState = Depends(require_near)) -> dict:
+        """Create a PENDING screen-share consent request (near-only).
+
+        v1: the request stays pending until approved from the laptop via
+        POST /screen/consent/{id}/approve. A real OS-level prompt is a
+        v1.1 upgrade.
+        """
+        consent_id = consent.start_consent_request()
+        return {"consent_id": consent_id, "status": "pending"}
+
+    @app.post("/screen/consent/{consent_id}/approve")
+    def screen_consent_approve(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
+        """Laptop-side approval for a pending screen-share request (near-only)."""
+        if consent.approve(consent_id):
+            return {"consent_id": consent_id, "status": "approved"}
+        status = consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        if status is streams.ConsentStatus.DENIED:
+            raise _http_error(409, ERROR_CONSENT_DENIED)
+        raise _http_error(400, {"error": {"code": "bad_request", "message": "Consent request is not pending"}})
+
+    @app.post("/screen/consent/{consent_id}/deny")
+    def screen_consent_deny(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
+        """Laptop-side denial for a pending screen-share request (near-only)."""
+        if consent.deny(consent_id):
+            return {"consent_id": consent_id, "status": "denied"}
+        status = consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        raise _http_error(409, {"error": {"code": "conflict", "message": "Consent already approved"}})
+
     @app.get("/screen")
-    def screen(_auth: AuthState = Depends(require_near)) -> JSONResponse:
-        # MJPEG preview lands in Phase 3 with the consent gate (SECURITY.md).
-        return JSONResponse(
-            status_code=501,
-            content={"error": {"code": "not_implemented", "message": "Screen preview ships in Phase 3"}},
+    def screen(request: Request, _auth: AuthState = Depends(require_near)) -> StreamingResponse:
+        """MJPEG stream of the primary display — near-only AND consent-gated.
+
+        The client passes the approved grant as ``?consent_id=…`` or the
+        ``X-Consent-Id`` header. Anything else fails closed with 403. The
+        grant is re-checked on every frame, so expiry stops a live stream.
+        """
+        consent_id = request.query_params.get("consent_id") or request.headers.get("x-consent-id") or ""
+        status = consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(403, ERROR_CONSENT_REQUIRED)
+        if status is streams.ConsentStatus.DENIED:
+            raise _http_error(403, ERROR_CONSENT_DENIED)
+        if status is not streams.ConsentStatus.APPROVED:
+            raise _http_error(403, ERROR_CONSENT_REQUIRED)
+        return StreamingResponse(
+            streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id)),
+            media_type=streams.MJPEG_MEDIA_TYPE,
         )
 
     return app

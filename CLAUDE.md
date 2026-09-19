@@ -37,8 +37,8 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 *(Update this section at the end of every session — what's done, what's next, what's blocked. This is what makes the next session fast instead of re-explaining context.)*
 
 - [x] Phase 0 — Foundations (done 2026-09-19: scaffold + files/shell/web_search tools + planner caps + ollama-direct orchestrator + CLI; 27 tests pass, 1 skip (win symlink priv); live `buddy "research ..."` verified vs qwen2.5-coder:7b)
-- [ ] Phase 1 — Voice loop
-- [ ] Phase 2 — Control server
+- [x] Phase 1 — Voice loop (code done 2026-09-19: wake/stt/tts/voice_loop + 7 loop tests; hardware verification pending — mic + `pip install -e .[voice]` + Piper model download + live out-loud demo)
+- [x] Phase 2 — Control server (code done 2026-09-19: token auth + lockout/idle/rotation, /command /events /health, proximity fail-closed, JSONL events, TLS gen_cert + serve + pair_device scripts; HTTPS verified locally via curl — /health ok, /command queued, unauth 401; phone-on-LAN check pending)
 - [ ] Phase 3 — Mobile app MVP
 - [ ] Phase 4 — Proximity & polish
 

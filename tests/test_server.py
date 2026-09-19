@@ -132,8 +132,10 @@ def test_format_sse_shape() -> None:
     assert json.loads(out.split("data: ", 1)[1]) == {"task_id": "x"}
 
 
-def test_screen_stub_needs_auth_and_is_near_gated(app_lan) -> None:
+def test_screen_needs_auth_and_consent(app_lan) -> None:
     client = TestClient(app_lan)
     assert client.get("/screen").status_code == 401
+    # Authenticated but no consent grant -> fail closed (consent_required, not 501).
     resp = client.get("/screen", headers={"Authorization": f"Bearer {TOKEN}"})
-    assert resp.status_code == 501  # Phase 3 implements the MJPEG stream
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "consent_required"

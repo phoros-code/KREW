@@ -1,0 +1,22 @@
+name: everyday_buddy
+description: Everyday Buddy phone companion — local-first control for the laptop agent.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.2.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.0
+  flutter_secure_storage: ^9.0.0
+  google_fonts: ^6.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
