@@ -50,6 +50,13 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Env: `venv312/` fully installed incl. CrewAI (74 tests passed there); models `qwen2.5:3b` + `llama3.1:8b` + `qwen2.5-coder:7b` all pulled. Pillow 12.3.0 added to pyproject/requirements.
 - Next: verify Flutter SDK (`flutter analyze`, `flutter test`, device run), then Phase 4 (BT RSSI, notifications, hardening, v0.1.0).
 
+## Session notes (2026-09-20, cont.)
+
+- CI added (`.github/workflows/ci.yml`: pytest + pip-audit + flutter jobs). Committed + pushed (`4b1611a`).
+- UX audit PASS: 5 mobile files fixed (scale tokens, semantics, copy); DESIGN.md status table gained ONLINE/CONNECTING/task-summary rows. Contrast watch noted for next DESIGN pass.
+- Flutter SDK: winget has no Flutter package here — earlier attempts silently failed. Manual zip install running via `scripts/install_flutter.ps1` → `C:\src\flutter` (see `flutter_install.log`).
+- Standing rule this session: commit + push after every update (remote: `origin/master` @ phoros-code/KREW).
+
 ## Session notes (2026-09-19)
 
 - Done: full Phase 0 per PROMPTS.md. License picked: MIT (`LICENSE` added).
