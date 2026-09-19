@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+venv312/
+pip312.log
+server.pid
+body.json
+.env
+
+# Everyday Buddy secrets — NEVER commit the real file (SECURITY.md)
+config/security.yaml
+*.pem
+*.key
+certs/*.pem
+certs/*.key
+
+# Runtime
+logs/*.jsonl
+!logs/.gitkeep
+~/buddy-workspace/
+buddy-workspace/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,99 @@
+"""Restricted shell tool — the ONLY place ``subprocess`` is called in this repo.
+
+Allowlist + denylist come from ``config/tools.yaml`` (CLAUDE.md rule 1).
+The denylist is checked first and always wins over the allowlist (CONFIG.md).
+
+Defense in depth:
+- Built-in metacharacter block (``; && || | $ ` > <`` newlines) stops
+  command chaining even if an allowlist pattern would otherwise match.
+- Commands run with ``shell=False`` so there is no shell to inject into.
+- Per-call timeout from ``agent_limits.tool_timeout_seconds``.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import os
+import shlex
+import subprocess
+from dataclasses import dataclass
+
+from buddy_core.config import ShellConfig
+
+# Independent of config/tools.yaml — always blocked (SECURITY.md).
+_BUILTIN_DENY_CHARS = (";", "&&", "||", "|", "$", "`", ">", "<", "\n", "\r")
+
+
+class ShellDenied(ValueError):
+    """Raised when a command is not allowlisted or hits the denylist."""
+
+
+def _matches(command: str, patterns: list[str], case_insensitive: bool = False) -> str | None:
+    """Return the first matching pattern, or None."""
+    text = command.lower() if case_insensitive else command
+    for pat in patterns:
+        p = pat.lower() if case_insensitive else pat
+        if fnmatch.fnmatchcase(text, p):
+            return pat
+    return None
+
+
+def check_allowed(command: str, config: ShellConfig) -> None:
+    """Validate a command. Raises ShellDenied with the reason if blocked."""
+    cmd = command.strip()
+    if not cmd:
+        raise ShellDenied("Empty command")
+    if _matches(cmd, config.denylist, case_insensitive=True):
+        raise ShellDenied(f"Blocked by denylist: {cmd!r}")
+    if any(c in cmd for c in _BUILTIN_DENY_CHARS):
+        raise ShellDenied(f"Blocked: shell metacharacters not allowed: {cmd!r}")
+    if not _matches(cmd, config.allowlist):
+        raise ShellDenied(f"Not in allowlist: {cmd!r}")
+
+
+def is_allowed(command: str, config: ShellConfig) -> bool:
+    """Non-raising form of check_allowed."""
+    try:
+        check_allowed(command, config)
+    except ShellDenied:
+        return False
+    return True
+
+
+@dataclass
+class ShellResult:
+    ok: bool
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def run(command: str, config: ShellConfig, timeout_seconds: int = 30) -> ShellResult:
+    """Run an allowlisted command, capturing output. Raises ShellDenied if blocked."""
+    check_allowed(command, config)
+    argv = shlex.split(command, posix=(os.name != "nt"))
+    if os.name == "nt":
+        # shlex with posix=False keeps quote chars; strip one matching pair
+        # so `python -c "print('hi')"` reaches the interpreter unquoted.
+        argv = [
+            a[1:-1] if len(a) >= 2 and a[0] == a[-1] and a[0] in ("'", '"') else a
+            for a in argv
+        ]
+    try:
+        proc = subprocess.run(  # noqa: S603 — allowlist+denylist validated above; sole call site
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return ShellResult(ok=False, returncode=124, stdout=exc.stdout or "", stderr=f"Timed out after {timeout_seconds}s")
+    except FileNotFoundError:
+        return ShellResult(ok=False, returncode=127, stdout="", stderr=f"Executable not found: {argv[0]!r}")
+    return ShellResult(
+        ok=proc.returncode == 0,
+        returncode=proc.returncode,
+        stdout=proc.stdout,
+        stderr=proc.stderr,
+    )

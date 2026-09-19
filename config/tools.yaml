@@ -1,0 +1,32 @@
+shell:
+  allowlist:
+    - "git *"
+    - "python -m pytest*"
+    - "py -m pytest*"
+    - "ls *"
+    - "dir *"
+    - "cat *"
+    - "type *"
+    - "echo *"
+    - "ollama list*"
+    - "ollama show*"
+  denylist:               # checked first, always wins over allowlist
+    - "rm -rf*"
+    - "rmdir /s*"
+    - "del /f*"
+    - "*format*"
+    - "dd *"
+    - "mkfs*"
+    - ":(){ :|:& };:"     # fork bomb
+    - "*shutdown*"
+    - "*powershell*Remove-Item*"
+files:
+  workspace_root: "~/buddy-workspace"
+  allow_outside_workspace: false
+web_search:
+  backend: "duckduckgo"   # or "searxng"
+  searxng_url: ""          # required if backend is searxng
+agent_limits:
+  max_plan_steps: 20
+  max_recursion_depth: 2
+  tool_timeout_seconds: 30
