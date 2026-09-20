@@ -87,7 +87,7 @@ abstract final class BuddyTheme {
   }
 
   static TextStyle mono(Color color, {double size = 12.5}) {
-    return GoogleFonts.jetbrainsMono(
+    return GoogleFonts.jetBrainsMono(
       fontSize: size,
       color: color,
       height: 1.45,
@@ -105,7 +105,7 @@ abstract final class BuddyTheme {
   );
 
   static ThemeData light() {
-    final scheme = ColorScheme.light(
+    const scheme = ColorScheme.light(
       primary: BuddyColors.primary,
       secondary: BuddyColors.accent,
       surface: BuddyColors.baseLight,
@@ -185,7 +185,7 @@ abstract final class BuddyTheme {
   }
 
   static ThemeData dark() {
-    final scheme = ColorScheme.dark(
+    const scheme = ColorScheme.dark(
       primary: BuddyColors.primary,
       secondary: BuddyColors.accent,
       surface: BuddyColors.baseDark,

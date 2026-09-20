@@ -12,7 +12,7 @@ class PairingInfo {
 
 class SecureStore {
   SecureStore({FlutterSecureStorage? storage})
-    : _storage = storage ?? FlutterSecureStorage();
+    : _storage = storage ?? const FlutterSecureStorage();
 
   static const String hostKey = 'buddy_host';
   static const String tokenKey = 'buddy_token';

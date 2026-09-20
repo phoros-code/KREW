@@ -146,11 +146,11 @@ class _Pill extends StatelessWidget {
           vertical: BuddySpacing.s1,
         ),
         decoration: BoxDecoration(
-          color: color.withOpacity(0.12),
+          color: color.withValues(alpha: 0.12),
           borderRadius: const BorderRadius.all(
             Radius.circular(BuddyRadii.interactive),
           ),
-          border: Border.all(color: color.withOpacity(0.45)),
+          border: Border.all(color: color.withValues(alpha: 0.45)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
