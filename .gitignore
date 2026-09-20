@@ -30,3 +30,12 @@ Thumbs.db
 .vscode/
 .idea/
 .opencode/
+
+# Flutter build artifacts (SDK-verified locally; CI rebuilds from pubspec)
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+mobile/build/
+mobile/.dart_tool/
+mobile/pubspec.lock
