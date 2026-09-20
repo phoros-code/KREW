@@ -22,7 +22,7 @@ from buddy_core.tools.files import FileAccessDenied
 from buddy_core.tools.shell import ShellDenied
 from server import streams
 from server.auth import AuthState, load_auth_settings
-from server.main import create_app
+from server.main import RateLimiter, create_app, load_network_config
 
 PY = sys.executable
 TOKEN = "test-token-123"
@@ -182,23 +182,21 @@ def test_consent_store_stays_bounded_under_spam() -> None:
 # --- main.py: unauthenticated surface + error-shape leakage ---
 
 
-def _security(path, mode="lan_only") -> None:
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "auth": {
-                    "token": TOKEN,
-                    "max_failed_attempts": 5,
-                    "lockout_minutes": 15,
-                    "idle_timeout_minutes": 60,
-                    "token_absolute_max_age_days": 30,
-                    "issued_at": datetime.now(timezone.utc).isoformat(),
-                },
-                "proximity": {"mode": mode, "rssi_near_threshold": -60, "fail_mode": "far"},
-            }
-        ),
-        encoding="utf-8",
-    )
+def _security(path, mode="lan_only", rate: int | None = None) -> None:
+    doc = {
+        "auth": {
+            "token": TOKEN,
+            "max_failed_attempts": 5,
+            "lockout_minutes": 15,
+            "idle_timeout_minutes": 60,
+            "token_absolute_max_age_days": 30,
+            "issued_at": datetime.now(timezone.utc).isoformat(),
+        },
+        "proximity": {"mode": mode, "rssi_near_threshold": -60, "fail_mode": "far"},
+    }
+    if rate is not None:
+        doc["network"] = {"rate_limit_per_minute": rate}
+    path.write_text(yaml.safe_dump(doc), encoding="utf-8")
 
 
 @pytest.fixture()
@@ -237,3 +235,59 @@ def test_lockout_shape_is_generic(app_lan) -> None:
     assert resp.status_code == 429
     assert "bad-final" not in resp.text
     assert resp.json()["error"]["code"] == "locked_out"
+
+
+# --- main.py: per-IP request throttle (Phase 4, review item 3) ---
+
+
+def test_rate_limiter_unit_window_and_reset() -> None:
+    now = [1000.0]
+    lim = RateLimiter(per_minute=2, now=lambda: now[0])
+    assert lim.allow("1.2.3.4") == (True, 0.0)
+    assert lim.allow("1.2.3.4")[0] is True
+    ok, retry_after = lim.allow("1.2.3.4")
+    assert ok is False
+    assert retry_after > 0
+    now[0] += 61.0  # next window — no sleeping in tests
+    assert lim.allow("1.2.3.4")[0] is True
+
+
+def test_rate_limiter_unit_per_key_isolation() -> None:
+    lim = RateLimiter(per_minute=1)
+    assert lim.allow("a")[0] is True
+    assert lim.allow("a")[0] is False
+    assert lim.allow("b")[0] is True  # one noisy IP must not starve the rest
+
+
+def test_rate_limit_config_defaults_fail_safe(tmp_path) -> None:
+    sec = tmp_path / "security.yaml"
+    sec.write_text(yaml.safe_dump({"auth": {"token": "x"}}), encoding="utf-8")
+    assert load_network_config(sec)["rate_limit_per_minute"] == 60
+    for bad in ("garbage", 0, -5, None):
+        sec.write_text(
+            yaml.safe_dump({"auth": {"token": "x"}, "network": {"rate_limit_per_minute": bad}}),
+            encoding="utf-8",
+        )
+        assert load_network_config(sec)["rate_limit_per_minute"] == 60
+
+
+def test_rate_limit_429_integration(tmp_path) -> None:
+    """The declared cap is actually enforced — 4th request in a 3/min window."""
+    sec = tmp_path / "security.yaml"
+    _security(sec, rate=3)
+    app = create_app(security_path=sec, event_log=tmp_path / "events.jsonl")
+    client = TestClient(app)
+    for _ in range(3):
+        assert client.get("/health").status_code == 200
+    resp = client.get("/health")
+    assert resp.status_code == 429
+    assert resp.json()["error"]["code"] == "rate_limited"
+    assert "Retry-After" in resp.headers
+    assert TOKEN not in resp.text
+
+
+def test_rate_limit_leaves_normal_use_alone(app_lan) -> None:
+    """Default 60/min cap must not trip on ordinary request bursts."""
+    client = TestClient(app_lan)
+    for _ in range(10):
+        assert client.get("/health").status_code == 200

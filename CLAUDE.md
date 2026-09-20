@@ -61,8 +61,8 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 
 - Notifications done (`2e12de6`): SnackBar on task start/complete/fail via SSE + 13 dart tests (unrun — no SDK yet).
 - Security review done: docs endpoints disabled, lone-`&`/NUL blocks, UNC/drive/ADS rejections, consent-record cap; 16 new tests; `pip-audit` clean. 91 passed total.
-- HUMAN REVIEW items (rule 6, undecided): (1) X-RSSI is self-attested — proximity is UX nicety only; (2) 60-min idle bricks token until laptop-side rotate — confirm intended; (3) `rate_limit_per_minute: 60` declared but unenforced — needs token-bucket middleware before hostile-network use; (4) `/events` replays full history to any token-holder — keep logs payload-free.
-- Flutter 3.47.5 zip still downloading (`flutter_install.log`); then analyze/test/run.
+- HUMAN REVIEW items (rule 6): (1) X-RSSI is self-attested — proximity is UX nicety only (undecided); (2) 60-min idle bricks token until laptop-side rotate — confirm intended (undecided); (3) RESOLVED 2026-09-20: per-IP fixed-window throttle (`RateLimiter` in `server/main.py`, 429 `rate_limited` + `Retry-After`, 5 new tests, 103 passed); (4) `/events` replays full history to any token-holder — keep logs payload-free (undecided).
+- Flutter 3.47.5 zip download resumed via curl (`C:\src\flutter_sdk.zip`, ~467MB so far); then extract + analyze/test/run.
 
 ## Session notes (2026-09-19)
 

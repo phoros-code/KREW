@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 import yaml
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
@@ -39,6 +40,13 @@ ERROR_CONSENT_DENIED = {
     "error": {"code": "consent_denied", "message": "Screen share request was denied"}
 }
 ERROR_CONSENT_NOT_FOUND = {"error": {"code": "not_found", "message": "Unknown consent request"}}
+ERROR_RATE_LIMITED = {
+    "error": {"code": "rate_limited", "message": "Too many requests — slow down and try again shortly"}
+}
+
+# Documented default for network.rate_limit_per_minute (CONFIG.md).
+# Missing/unparseable config falls back here — never to "unlimited".
+DEFAULT_RATE_LIMIT_PER_MINUTE = 60
 
 
 def load_proximity_config(path: str | Path = SECURITY_PATH) -> dict:
@@ -65,6 +73,56 @@ def get_proximity(prox_cfg: dict, x_rssi: float | None = None) -> str:
         return "near" if float(x_rssi) >= float(prox_cfg.get("rssi_near_threshold", -60)) else "far"
     except (TypeError, ValueError):
         return "far"
+
+
+def load_network_config(path: str | Path = SECURITY_PATH) -> dict:
+    """Read the network section. Missing/garbage falls back to the default cap."""
+    path = Path(path)
+    src = path if path.exists() else CONFIG_DIR / "security.yaml.example"
+    per_minute = DEFAULT_RATE_LIMIT_PER_MINUTE
+    if src.exists():
+        try:
+            data = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            data = {}
+        net = data.get("network", {}) or {}
+        try:
+            per_minute = int(net.get("rate_limit_per_minute", per_minute))
+        except (TypeError, ValueError):
+            per_minute = DEFAULT_RATE_LIMIT_PER_MINUTE
+        if per_minute < 1:
+            per_minute = DEFAULT_RATE_LIMIT_PER_MINUTE
+    return {"rate_limit_per_minute": per_minute}
+
+
+class RateLimiter:
+    """Fixed-window per-client-IP request throttle (Phase 4 polish).
+
+    Bounds request volume from any single IP — a supplement to token auth +
+    failed-attempt lockout, never a replacement. Single-process, in-memory:
+    each server process (and each create_app in tests) owns its counters.
+    ``now`` is injectable so unit tests can skip the window without sleeping.
+    """
+
+    def __init__(
+        self,
+        per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE,
+        now: Callable[[], float] | None = None,
+    ) -> None:
+        self.per_minute = per_minute if per_minute >= 1 else DEFAULT_RATE_LIMIT_PER_MINUTE
+        self._now = now or time.monotonic
+        self._hits: dict[str, tuple[float, int]] = {}
+
+    def allow(self, key: str) -> tuple[bool, float]:
+        """Return (allowed, retry_after_seconds). Denials name the wait."""
+        now = self._now()
+        window_start, count = self._hits.get(key, (now, 0))
+        if now - window_start >= 60.0:
+            window_start, count = now, 0
+        if count < self.per_minute:
+            self._hits[key] = (window_start, count + 1)
+            return True, 0.0
+        return False, max(0.0, 60.0 - (now - window_start))
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -116,6 +174,25 @@ def create_app(
     app.state.auth_state = state
     consent = streams.ConsentManager()
     app.state.consent_manager = consent
+
+    # Per-IP request throttle from config/security.yaml (review item 3).
+    # Runs before auth so one noisy client can't starve the loop; 429s carry
+    # the API.md error envelope plus a Retry-After hint. /health is throttled
+    # too — unauthenticated probing gets no free pass.
+    limiter = RateLimiter(per_minute=load_network_config(security_path)["rate_limit_per_minute"])
+    app.state.rate_limiter = limiter
+
+    @app.middleware("http")
+    async def rate_limit_middleware(request: Request, call_next):
+        client = request.client.host if request.client else "unknown"
+        allowed, retry_after = limiter.allow(client)
+        if not allowed:
+            return JSONResponse(
+                status_code=429,
+                content=ERROR_RATE_LIMITED,
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+        return await call_next(request)
 
     @app.exception_handler(_http_error)
     async def handle_http_error(_: Request, exc: _http_error) -> JSONResponse:

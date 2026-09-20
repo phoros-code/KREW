@@ -92,4 +92,8 @@ The phone app treats **any** 401 from `/command` or `/events` as "show the
 re-pair prompt" directly, without waiting for a `token_expired` SSE frame
 (which itself requires auth to receive).
 
+429 carries either `locked_out` (too many bad tokens — wait out
+`lockout_minutes`) or `rate_limited` (over `network.rate_limit_per_minute`
+requests from your IP — wait per the `Retry-After` header and retry).
+
 Design the phone app's error *states* for each of these — see `UI_UX_GUIDE.md`, "design real error states" — rather than surfacing the raw JSON.

@@ -63,7 +63,7 @@ proximity:
 network:
   bind_host: "0.0.0.0"           # bound to LAN interface only; do not port-forward
   bind_port: 8443
-  rate_limit_per_minute: 60
+  rate_limit_per_minute: 60  # enforced per client IP by middleware in server/main.py (429 rate_limited)
 ```
 
 ## `config/tools.yaml` vs `config/security.yaml` — which is which

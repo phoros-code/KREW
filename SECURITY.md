@@ -27,7 +27,7 @@ We are explicitly **not** defending against a well-resourced attacker who alread
 - **One-time pairing token**, generated on the laptop on first run, shown as a QR code or short code, entered once on the phone and stored in platform secure storage (Android Keystore / iOS Keychain — never plain SharedPreferences or a plist).
 - **Every** `/command`, `/events`, `/screen`, `/webcam` request requires the token. No unauthenticated endpoint should exist except a minimal health check that reveals nothing sensitive.
 - **Token rotation.** Support regenerating the token from the laptop UI at any time, which immediately invalidates the old one — this is your answer to "I think my phone got compromised."
-- **Rate limiting and idle timeouts** on the auth layer: lock out after repeated failed attempts, expire idle sessions, and re-require pairing after a configurable period of inactivity.
+- **Rate limiting and idle timeouts** on the auth layer: lock out after repeated failed attempts, expire idle sessions, and re-require pairing after a configurable period of inactivity. A per-IP request throttle (`network.rate_limit_per_minute`, enforced as middleware in `server/main.py`) additionally bounds request volume from any single client — supplements auth, never substitutes for it.
 - **PIN as a second factor is optional, not a substitute** for the token — don't rely on PIN-over-HTTP as your only protection (this is one of the specific weaknesses noted in AnovaX's own paper, and worth taking seriously here too).
 
 ## Authorization: proximity gating
