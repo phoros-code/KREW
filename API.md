@@ -42,6 +42,12 @@ Response:
 
 Streams agent lifecycle events as Server-Sent Events, tailing `logs/events.jsonl`.
 
+On connect, the server replays the **last 200 events** (bounded — a phone
+reconnecting after days offline must not get the whole log dumped on it;
+full-history-with-pagination is a v1.1 feature), then follows new lines
+until the client disconnects. An attached stream counts as activity for the
+idle timeout — passive followers don't get bricked mid-session.
+
 ```
 event: task_started
 data: {"task_id": "b7e1...", "text": "research best free local LLMs..."}

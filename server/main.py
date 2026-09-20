@@ -22,6 +22,7 @@ from typing import Callable, Iterator
 import yaml
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.types import Receive, Scope, Send
 
 from buddy_core.config import CONFIG_DIR
 from server import streams
@@ -125,6 +126,54 @@ class RateLimiter:
         return False, max(0.0, 60.0 - (now - window_start))
 
 
+class RateLimitMiddleware:
+    """Pure-ASGI per-IP throttle (Phase 4, review item 3).
+
+    Deliberately NOT a BaseHTTPMiddleware: that wrapper buffers the request
+    body and interposes on ``receive``, which breaks disconnect detection for
+    long-lived streams (the /events follow-loop parks after one pass; MJPEG
+    already had to route around it). This middleware never touches the body
+    or ``receive`` — it counts ``scope["client"]`` and delegates untouched.
+    """
+
+    def __init__(self, app, limiter: RateLimiter) -> None:
+        self.app = app
+        self.limiter = limiter
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        client = scope.get("client")
+        key = client[0] if client else "unknown"
+        allowed, retry_after = self.limiter.allow(key)
+        if not allowed:
+            resp = JSONResponse(
+                status_code=429,
+                content=ERROR_RATE_LIMITED,
+                headers={"Retry-After": str(int(retry_after) + 1)},
+            )
+            await resp(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+async def _still_connected(request: Request, timeout: float = 0.5) -> bool:
+    """Disconnect check that never parks a follow-loop.
+
+    ``request.is_disconnected()`` blocks until the transport speaks, and with
+    uvicorn there is exactly one pre-disconnect message — so a bare call runs
+    a follow-loop once and then parks until the client goes away (new events
+    would never stream). A timeout turns "no news" into "still attached" —
+    the same pattern as ``streams._client_gone``. A real disconnect surfaces
+    on the next poll, at most ``timeout`` late.
+    """
+    try:
+        return not await asyncio.wait_for(request.is_disconnected(), timeout=timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        return True
+
+
 def _bearer_token(authorization: str | None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         return ""
@@ -136,16 +185,60 @@ def iter_log_events(log_path: Path, from_offset: int = 0) -> Iterator[tuple[str,
     with log_path.open(encoding="utf-8") as fh:
         fh.seek(from_offset)
         for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            event_type = record.pop("type", "message")
-            record.pop("at", None)
-            yield event_type, record
+            parsed = _parse_log_line(line)
+            if parsed is not None:
+                yield parsed
+
+
+def _parse_log_line(line: str) -> tuple[str, dict] | None:
+    """Parse one JSONL event line. Junk lines yield None (never raise)."""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        record = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    event_type = record.pop("type", "message")
+    record.pop("at", None)
+    return event_type, record
+
+
+# v0.1.0 reconnect bound (human decision 4): a phone reconnecting after a
+# day offline must NOT get the whole events.jsonl dumped on it in one shot
+# (phone bandwidth/battery + one unbounded laptop-side read). Replay is
+# capped to the trailing slice; "everything, paginated" is a v1.1 feature.
+EVENTS_REPLAY_LIMIT = 200
+
+
+def tail_log_events(log_path: Path, limit: int = EVENTS_REPLAY_LIMIT) -> list[tuple[str, dict]]:
+    """Return the last `limit` events, oldest-first. Memory stays O(limit)."""
+    if limit < 1:
+        limit = EVENTS_REPLAY_LIMIT
+    from collections import deque
+
+    entries: deque[tuple[str, dict]] = deque(maxlen=limit)
+    if not log_path.exists():
+        return []
+    with log_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            parsed = _parse_log_line(line)
+            if parsed is not None:
+                entries.append(parsed)
+    return list(entries)
+
+
+def touch_activity(state: AuthState) -> None:
+    """Stamp activity from ANY authenticated surface — commands, consent
+    calls, and long-lived streams (/events keep-alives, /screen frames).
+
+    Human decision (2): "idle" means no activity across the LAN surface,
+    not "no /command issued" — a phone passively watching a live stream
+    for an hour must not get bricked mid-session. AuthState.verify() stamps
+    the same clock on discrete requests; the stream loops below call this
+    explicitly because a single long-lived request stamps only once.
+    """
+    state.last_activity = state.now()
 
 
 def format_sse(event_type: str, payload: dict) -> str:
@@ -181,18 +274,7 @@ def create_app(
     # too — unauthenticated probing gets no free pass.
     limiter = RateLimiter(per_minute=load_network_config(security_path)["rate_limit_per_minute"])
     app.state.rate_limiter = limiter
-
-    @app.middleware("http")
-    async def rate_limit_middleware(request: Request, call_next):
-        client = request.client.host if request.client else "unknown"
-        allowed, retry_after = limiter.allow(client)
-        if not allowed:
-            return JSONResponse(
-                status_code=429,
-                content=ERROR_RATE_LIMITED,
-                headers={"Retry-After": str(int(retry_after) + 1)},
-            )
-        return await call_next(request)
+    app.add_middleware(RateLimitMiddleware, limiter=limiter)
 
     @app.exception_handler(_http_error)
     async def handle_http_error(_: Request, exc: _http_error) -> JSONResponse:
@@ -213,6 +295,12 @@ def create_app(
         raise _http_error(401, ERROR_UNAUTHORIZED)
 
     def require_near(request: Request, auth: AuthState = Depends(require_auth)) -> AuthState:
+        # HUMAN DECISION (1) — X-RSSI is self-attested and DECORATIVE. Its
+        # ONLY server-side use is this near/far gate (fail-closed to far).
+        # Auth identity, lockout, throttling, and consent must NEVER branch
+        # on it — a client can send any value it likes. If you're tempted to
+        # add "weak RSSI → also throttle" as a harmless optimization: don't.
+        # That would promote a spoofable hint into a security input.
         rssi: float | None = None
         raw = request.headers.get("x-rssi")
         if raw is not None:
@@ -243,13 +331,11 @@ def create_app(
     def events(request: Request, _auth: AuthState = Depends(require_auth)):
         async def stream():
             offset = log_path.stat().st_size if log_path.exists() else 0
-            # Replay what exists now…
-            for event_type, payload in iter_log_events(log_path, 0):
+            # Bounded replay (decision 4) — trailing slice only, then follow.
+            for event_type, payload in tail_log_events(log_path):
                 yield format_sse(event_type, payload)
             # …then follow new lines until the client disconnects.
-            while True:
-                if await request.is_disconnected():
-                    break
+            while await _still_connected(request):
                 await asyncio.sleep(0.5)
                 if not log_path.exists():
                     continue
@@ -260,6 +346,7 @@ def create_app(
                     for event_type, payload in iter_log_events(log_path, offset):
                         yield format_sse(event_type, payload)
                     offset = size
+                touch_activity(state)  # keep-alives are activity (decision 2)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -314,7 +401,9 @@ def create_app(
             raise _http_error(403, ERROR_CONSENT_REQUIRED)
 
         def build_gen():
-            return streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id))
+            for chunk in streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id)):
+                touch_activity(state)  # frame pulls are activity (decision 2)
+                yield chunk
 
         return streams.MJPEGResponse(build_gen)
 

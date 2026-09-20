@@ -74,6 +74,39 @@ def test_idle_timeout_expires_session(tmp_path) -> None:
     assert not state.verify(settings.token)  # must re-pair
 
 
+def test_idle_and_absolute_are_distinct_bricks(tmp_path) -> None:
+    """Human decision (2): two separate shorter/outer fuses, distinct names.
+
+    idle_timeout (no LAN-surface activity for N minutes) and absolute_max_age
+    (hard ceiling from issuance) are different settings, different predicates,
+    and different verify_with_code results — a future edit to one rule must
+    not silently change the other.
+    """
+    sec = tmp_path / "security.yaml"
+    settings = load_auth_settings(sec)
+    settings.idle_timeout_minutes = 60
+    settings.token_absolute_max_age_days = 30
+
+    # Idle brick: recent issuance, stale activity.
+    now = [datetime.now(timezone.utc)]
+    idle = AuthState(settings=settings, now=lambda: now[0])
+    assert idle.verify(settings.token)
+    now[0] += timedelta(minutes=61)
+    ok, code = idle.verify_with_code(settings.token)
+    assert not ok and code == "idle_expired"
+    assert not idle.is_absolute_expired()  # the OTHER fuse is untouched
+
+    # Absolute brick: fresh activity, ancient issuance.
+    old = AuthState(
+        settings=settings,
+        issued_at=now[0] - timedelta(days=31),
+        on_expire=lambda _event, _payload: None,  # keep the notice out of the repo log
+    )
+    ok, code = old.verify_with_code(settings.token)
+    assert not ok and code == "token_expired"
+    assert not old.is_idle_expired()  # the OTHER fuse is untouched
+
+
 def test_rotate_invalidates_old_token(tmp_path) -> None:
     sec = tmp_path / "security.yaml"
     settings = load_auth_settings(sec)

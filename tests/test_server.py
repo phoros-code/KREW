@@ -8,7 +8,7 @@ import yaml
 from fastapi.testclient import TestClient
 
 from buddy_core import orchestrator
-from server.main import create_app, format_sse, get_proximity, iter_log_events
+from server.main import create_app, format_sse, get_proximity, iter_log_events, tail_log_events
 
 TOKEN = "test-token-123"
 
@@ -126,6 +126,41 @@ def test_iter_log_events_skips_junk(tmp_path) -> None:
     )
     events = list(iter_log_events(log))
     assert [e[0] for e in events] == ["task_started", "tool_call"]
+
+
+def test_tail_returns_trailing_slice_in_order(tmp_path) -> None:
+    """Decision (4): reconnect replay is capped — last 200, oldest-first."""
+    from server.main import EVENTS_REPLAY_LIMIT
+
+    log = tmp_path / "e.jsonl"
+    log.write_text(
+        "".join(json.dumps({"type": "tool_call", "n": n}) + "\n" for n in range(250)),
+        encoding="utf-8",
+    )
+    events = tail_log_events(log)
+    assert len(events) == EVENTS_REPLAY_LIMIT == 200
+    assert [p["n"] for _, p in events] == list(range(50, 250))
+
+
+def test_tail_short_log_returns_everything_oldest_first(tmp_path) -> None:
+    log = tmp_path / "e.jsonl"
+    log.write_text('{"type": "a"}\n{"type": "b"}\n', encoding="utf-8")
+    assert [e[0] for e in tail_log_events(log)] == ["a", "b"]
+
+
+def test_tail_skips_junk_and_missing_file(tmp_path) -> None:
+    log = tmp_path / "e.jsonl"
+    log.write_text('{"type": "a"}\nnot-json\n\n{"type": "b"}\n', encoding="utf-8")
+    assert [e[0] for e in tail_log_events(log)] == ["a", "b"]
+    assert tail_log_events(tmp_path / "nope.jsonl") == []
+
+
+def test_tail_rejects_nonpositive_limit(tmp_path) -> None:
+    from server.main import EVENTS_REPLAY_LIMIT
+
+    log = tmp_path / "e.jsonl"
+    log.write_text('{"type": "a"}\n', encoding="utf-8")
+    assert tail_log_events(log, limit=0) == tail_log_events(log, limit=EVENTS_REPLAY_LIMIT)
 
 
 def test_format_sse_shape() -> None:

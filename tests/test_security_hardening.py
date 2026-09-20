@@ -291,3 +291,20 @@ def test_rate_limit_leaves_normal_use_alone(app_lan) -> None:
     client = TestClient(app_lan)
     for _ in range(10):
         assert client.get("/health").status_code == 200
+
+
+def test_throttle_is_blind_to_x_rssi(tmp_path) -> None:
+    """Decision (1): X-RSSI must never become a throttling signal.
+
+    Same client IP with wildly different self-reported RSSI shares one
+    bucket — strong signal buys no extra requests, weak signal loses none.
+    """
+    sec = tmp_path / "security.yaml"
+    _security(sec, rate=2)
+    app = create_app(security_path=sec, event_log=tmp_path / "events.jsonl")
+    client = TestClient(app)
+    assert client.get("/health", headers={"X-RSSI": "-20"}).status_code == 200
+    assert client.get("/health", headers={"X-RSSI": "-90"}).status_code == 200
+    resp = client.get("/health", headers={"X-RSSI": "-20"})
+    assert resp.status_code == 429
+    assert resp.json()["error"]["code"] == "rate_limited"

@@ -6,6 +6,7 @@ screenshots, no display needed. Mirrors the fixture style of test_server.py.
 
 import builtins
 import io
+import json
 from datetime import datetime, timezone
 
 import anyio
@@ -270,6 +271,142 @@ async def test_stream_over_real_socket(app_lan, fake_capture) -> None:
                 assert "multipart/x-mixed-replace" in resp.headers["content-type"]
                 body = await _aread_frames(resp, want_soi=1)
             assert streams.JPEG_SOI in body
+    server.should_exit = True
+    thread.join(timeout=10)
+
+
+def _http_scope(path: str, query: bytes = b"", token: str = TOKEN) -> dict:
+    """Minimal ASGI HTTP scope for driving a route without a socket."""
+    return {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "query_string": query,
+        "root_path": "",
+        "headers": [(b"authorization", f"Bearer {token}".encode())],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+
+
+@pytest.mark.asyncio
+async def test_screen_frames_touch_activity(app_lan, fake_capture, monkeypatch) -> None:
+    """Decision (2): frame pulls are LAN-surface activity, not idle time.
+
+    Drives the REAL /screen route (auth + consent + heartbeat wrapper) and
+    counts touch_activity calls — a passive watcher must not brick mid-session.
+
+    Transport note: the app's HTTP middleware buffers the request body itself,
+    so the fake must emulate a real transport — exactly one http.request body,
+    then block-until-disconnect (never a stream of http.request messages,
+    which real servers never deliver downstream).
+    """
+    touches: list[str] = []
+    import server.main as main_mod
+
+    real_touch = main_mod.touch_activity
+
+    def counting_touch(state) -> None:
+        touches.append("frame")
+        real_touch(state)
+
+    monkeypatch.setattr("server.main.touch_activity", counting_touch)
+    client = TestClient(app_lan)
+    cid = _request_consent(client)
+    _approve(client, cid)
+
+    gone = anyio.Event()
+    sent_body = False
+    frames_seen = 0
+
+    async def receive() -> dict:
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await gone.wait()  # _client_gone's 0.05s poll treats the wait as "connected"
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        nonlocal frames_seen
+        if message["type"] == "http.response.body" and message.get("body", b""):
+            frames_seen += message["body"].count(streams.JPEG_SOI)
+            if frames_seen >= 2:
+                gone.set()
+
+    scope = _http_scope("/screen", query=f"consent_id={cid}".encode())
+    with anyio.fail_after(20):
+        await app_lan(scope, receive, send)
+    assert frames_seen >= 2
+    assert len(touches) >= 2
+
+
+@pytest.mark.asyncio
+async def test_events_keepalive_touches_activity(tmp_path, monkeypatch) -> None:
+    """Decision (2): an open /events stream is activity — followers don't brick.
+
+    Real socket (like the MJPEG socket test): only a true HTTP transport
+    delivers disconnects the way the app expects, and only a live follow-loop
+    can prove the per-poll heartbeat fires. The reader DRAINS continuously —
+    breaking out of aiter_bytes() would aclose() the response and drop the
+    connection under test (a self-inflicted disconnect that once burned an
+    hour of debugging).
+    """
+    uvicorn = pytest.importorskip("uvicorn")
+    import threading
+
+    sec = tmp_path / "security.yaml"
+    _security(sec, "lan_only")
+    log = tmp_path / "events.jsonl"
+    log.write_text(json.dumps({"type": "task_started", "task_id": "hb"}) + "\n", encoding="utf-8")
+    app = create_app(security_path=sec, event_log=log)
+
+    touches: list[str] = []
+    import server.main as main_mod
+
+    real_touch = main_mod.touch_activity
+
+    def counting_touch(state) -> None:
+        touches.append("poll")
+        real_touch(state)
+
+    monkeypatch.setattr("server.main.touch_activity", counting_touch)
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    received: list[bytes] = []
+    replayed = anyio.Event()
+
+    async def drain(port: int) -> None:
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as http:
+            async with http.stream("GET", "/events", headers=_auth(), timeout=10) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():  # never break: drain till cancelled
+                    received.append(chunk)
+                    if b"task_started" in b"".join(received):
+                        replayed.set()
+
+    with anyio.fail_after(25):
+        while not server.started:
+            await anyio.sleep(0.05)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(drain, port)
+            with anyio.fail_after(10):
+                await replayed.wait()  # capped replay still delivers history
+            await anyio.sleep(0.2)
+            # A line appended mid-stream must reach the attached follower.
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"type": "tool_call", "tool": "w"}) + "\n")
+            await anyio.sleep(1.5)  # ≥2 follow polls at the 0.5s cadence
+            tg.cancel_scope.cancel()  # drop the connection → server-side disconnect
+    assert len(touches) >= 2
+    assert b"tool_call" in b"".join(received)
     server.should_exit = True
     thread.join(timeout=10)
 
