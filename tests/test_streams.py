@@ -6,6 +6,7 @@ screenshots, no display needed. Mirrors the fixture style of test_server.py.
 
 import builtins
 import io
+from datetime import datetime, timezone
 
 import anyio
 import httpx
@@ -29,6 +30,8 @@ def _security(path, mode="lan_only") -> None:
                     "max_failed_attempts": 5,
                     "lockout_minutes": 15,
                     "idle_timeout_minutes": 60,
+                    "token_absolute_max_age_days": 30,
+                    "issued_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "proximity": {"mode": mode, "rssi_near_threshold": -60, "fail_mode": "far"},
             }

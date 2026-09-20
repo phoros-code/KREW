@@ -1,6 +1,7 @@
 """Tests for server/main.py — TestClient routing/auth/proximity, no real network."""
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 import yaml
@@ -21,6 +22,8 @@ def _security(path, mode="lan_only") -> None:
                     "max_failed_attempts": 5,
                     "lockout_minutes": 15,
                     "idle_timeout_minutes": 60,
+                    "token_absolute_max_age_days": 30,
+                    "issued_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "proximity": {"mode": mode, "rssi_near_threshold": -60, "fail_mode": "far"},
             }
@@ -87,7 +90,6 @@ def test_command_far_mode_forbidden(app_bt) -> None:
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "forbidden"
 
-
 def test_command_near_with_strong_rssi(app_bt, monkeypatch) -> None:
     monkeypatch.setattr(
         orchestrator, "run", lambda text, task_id=None: orchestrator.TaskResult(ok=True, output="d", task_id=task_id or "x")
@@ -139,3 +141,27 @@ def test_screen_needs_auth_and_consent(app_lan) -> None:
     resp = client.get("/screen", headers={"Authorization": f"Bearer {TOKEN}"})
     assert resp.status_code == 403
     assert resp.json()["error"]["code"] == "consent_required"
+
+
+def test_expired_token_gets_scoped_401_code(tmp_path) -> None:
+    """Absolute ceiling surfaces per-connection as 401 token_expired.
+
+    The expiring device learns to re-pair from THIS response — it must not
+    depend on ever seeing the broadcast SSE frame (which itself needs auth).
+    """
+    from datetime import datetime, timedelta, timezone
+
+    sec = tmp_path / "security.yaml"
+    _security(sec, "lan_only")
+    data = yaml.safe_load(sec.read_text(encoding="utf-8"))
+    data["auth"]["issued_at"] = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+    sec.write_text(yaml.safe_dump(data), encoding="utf-8")
+    app = create_app(security_path=sec, event_log=tmp_path / "events.jsonl")
+    client = TestClient(app)
+    resp = client.post("/command", json={"text": "hi"}, headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "token_expired"
+    # Wrong token still gets the generic code (no expiry oracle).
+    resp = client.post("/command", json={"text": "hi"}, headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "unauthorized"

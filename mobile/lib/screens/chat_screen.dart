@@ -73,6 +73,8 @@ class _ChatScreenState extends State<ChatScreen> {
     switch (e.code) {
       case 'unauthorized':
         return 'The laptop rejected the token. Re-pair from the Pair tab.';
+      case 'token_expired':
+        return 'The pairing token reached its age limit. Re-pair from the Pair tab.';
       case 'forbidden':
         return 'Blocked: commands need near proximity. You are on notifications-only until you move closer.';
       case 'locked_out':

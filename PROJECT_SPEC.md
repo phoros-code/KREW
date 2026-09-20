@@ -8,7 +8,7 @@ Project identity: "Everyday Buddy" (codename: `buddy-core`) — a personal, loca
 
 ## Executive summary
 
-Everyday Buddy is a free, open-source, local-first multi-agent AI assistant designed to run on your laptop and be controlled/notified from your phone. Inspired by the general concept of a personal AI assistant, it intentionally avoids cloud dependency. It combines:
+Everyday Buddy is a free, open-source, local-first multi-agent AI assistant designed to run on your laptop and be controlled/notified from your phone. Inspired by the general concept of a personal AI assistant, it intentionally avoids cloud LLM calls — inference, agents, and control run entirely on your laptop and LAN. Background push notifications (optional) route through Google's FCM. It combines:
 
 - Local LLM inference (Ollama) with multi-agent orchestration (CrewAI / LangGraph / AutoGen)
 - Fully offline voice interface (wake word → STT → LLM → TTS)
@@ -16,7 +16,7 @@ Everyday Buddy is a free, open-source, local-first multi-agent AI assistant desi
 - Proximity-aware access control (LAN-only + optional Bluetooth RSSI gating)
 - Tool-using agents for coding, research, automation, and system tasks
 
-**Key differentiator:** an action-taking assistant that can open apps, type, browse, code, execute commands, and recover from failures — while staying 100% local and free.
+**Key differentiator:** an action-taking assistant that can open apps, type, browse, code, execute commands, and recover from failures — while staying local-first and free.
 
 ---
 
@@ -46,7 +46,7 @@ Yes. Several 2025–2026 projects overlap with parts of this design.
 
 **Local AI agent resources & frameworks:** CrewAI, LangGraph, AutoGen, OpenHands, Goose, and others are all open-source agent harnesses that run with local LLMs via Ollama. Multiple public guides exist for fully-local voice stacks (Whisper/faster-whisper + Piper/Kokoro + Ollama).
 
-**Conclusion:** the core ideas are validated by multiple 2025–2026 projects, especially AnovaX. No single project matches this exact combination (fully free, fully local, laptop-centric, phone-controlled, proximity-aware, multi-agent) — but every building block exists and is open source.
+**Conclusion:** the core ideas are validated by multiple 2025–2026 projects, especially AnovaX. No single project matches this exact combination (fully free, local-first, laptop-centric, phone-controlled, proximity-aware, multi-agent) — but every building block exists and is open source.
 
 ---
 
@@ -101,7 +101,7 @@ Platform: Flutter or React Native (cross-platform), or native Kotlin/Swift. Feat
 
 - True human-level general intelligence
 - Multi-user / org orchestration
-- Cloud fallback (must be 100% local in v1)
+- Cloud fallback (must stay local-first in v1 — no cloud LLM calls)
 - Complex UI automation beyond basic `pyautogui` (no deep accessibility-tree integration initially)
 
 ---
@@ -218,7 +218,7 @@ everyday-buddy/
 
 ## 9. How this differs from existing projects
 
-- **vs. AnovaX:** fully local (no Gemini/Google STT); stronger security model (TLS, token rotation, proximity gating); explicit phone-first UX.
+- **vs. AnovaX:** local-first (no Gemini/Google STT); stronger security model (TLS, token rotation, proximity gating); explicit phone-first UX.
 - **vs. OpenAkita:** simpler, single-user, local-first; no org orchestration or IM scan-to-bind; focused on laptop automation + phone remote, not multi-IM chat.
 - **vs. AI Assistant Android:** laptop-centric agents with phone as remote, not phone-only assistant; multi-agent orchestration for complex tasks.
 - **vs. OpenClaw:** local inference by default rather than routing to a cloud LLM provider; direct laptop automation + phone remote rather than multi-channel messaging.

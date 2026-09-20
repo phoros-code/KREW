@@ -1,6 +1,6 @@
 # Everyday Buddy
 
-A local-first, multi-agent AI assistant that runs on your laptop and is controlled from your phone. No cloud dependency, no subscription, fully open source.
+A local-first, multi-agent AI assistant that runs on your laptop and is controlled from your phone. No cloud LLM calls, no subscription, fully open source. Local-first means inference, agents, and control run entirely on your LAN — background push notifications (optional) route through Google's FCM.
 
 Codename: `buddy-core` · License: MIT (see [`LICENSE`](./LICENSE))
 

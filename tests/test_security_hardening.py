@@ -10,6 +10,7 @@ fail-closed behaviour so it can't silently regress:
 """
 
 import sys
+from datetime import datetime, timezone
 
 import pytest
 import yaml
@@ -104,6 +105,8 @@ def _write_auth(path, **overrides) -> None:
         "max_failed_attempts": 2,
         "lockout_minutes": 15,
         "idle_timeout_minutes": 60,
+        "token_absolute_max_age_days": 30,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
     }
     auth.update(overrides)
     path.write_text(yaml.safe_dump({"auth": auth}), encoding="utf-8")
@@ -188,6 +191,8 @@ def _security(path, mode="lan_only") -> None:
                     "max_failed_attempts": 5,
                     "lockout_minutes": 15,
                     "idle_timeout_minutes": 60,
+                    "token_absolute_max_age_days": 30,
+                    "issued_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "proximity": {"mode": mode, "rssi_near_threshold": -60, "fail_mode": "far"},
             }

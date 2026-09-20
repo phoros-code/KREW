@@ -162,9 +162,16 @@ class _BuddyAppState extends State<BuddyApp> {
       },
       onError: (Object err) {
         if (!mounted || attempt != _connectAttempt) return;
-        final String message = err is BuddyApiException
+        // Any 401 on the stream means re-pair — decided from THIS response,
+        // never by waiting for a token_expired SSE frame (which needs auth
+        // to receive in the first place). See API.md error codes.
+        String message = err is BuddyApiException
             ? err.message
             : 'The live stream dropped. Reconnect to resume updates.';
+        if (err is BuddyApiException &&
+            (err.code == 'unauthorized' || err.code == 'token_expired')) {
+          message = 'The laptop rejected the token. Re-pair from the Pair tab.';
+        }
         if (err is BuddyApiException && err.code == 'forbidden') {
           _proximity.markFar();
         }

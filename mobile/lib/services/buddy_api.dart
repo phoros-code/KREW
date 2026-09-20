@@ -355,6 +355,7 @@ class BuddyApi {
         case 'forbidden':
           return ScreenStatus.forbidden;
         case 'unauthorized':
+        case 'token_expired':
           return ScreenStatus.unauthorized;
         default:
           if (resp.statusCode == 401) return ScreenStatus.unauthorized;

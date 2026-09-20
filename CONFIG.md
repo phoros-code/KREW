@@ -49,6 +49,7 @@ agent_limits:
 auth:
   token: ""                     # generated on first run, never committed
   token_rotation_days: 30
+  token_absolute_max_age_days: 30  # hard ceiling from issuance, regardless of activity; forces re-pairing
   max_failed_attempts: 5
   lockout_minutes: 15
   idle_timeout_minutes: 60

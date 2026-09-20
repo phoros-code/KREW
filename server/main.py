@@ -27,6 +27,9 @@ from server import streams
 from server.auth import SECURITY_PATH, AuthState, load_auth_settings
 
 ERROR_UNAUTHORIZED = {"error": {"code": "unauthorized", "message": "Invalid or expired token"}}
+ERROR_TOKEN_EXPIRED = {
+    "error": {"code": "token_expired", "message": "Pairing token exceeded its absolute age — re-pair from the laptop"}
+}
 ERROR_FORBIDDEN = {"error": {"code": "forbidden", "message": "Requires near proximity"}}
 ERROR_LOCKED = {"error": {"code": "locked_out", "message": "Too many failed attempts — try again later"}}
 ERROR_CONSENT_REQUIRED = {
@@ -122,9 +125,15 @@ def create_app(
         token = _bearer_token(request.headers.get("authorization"))
         if state.is_locked():
             raise _http_error(429, ERROR_LOCKED)
-        if not state.verify(token):
-            raise _http_error(401, ERROR_UNAUTHORIZED)
-        return state
+        ok, code = state.verify_with_code(token)
+        if ok:
+            return state
+        # Both 401s: the ceiling gets its own code so the expiring device
+        # learns to re-pair from THIS response — it must not depend on ever
+        # seeing the broadcast token_expired SSE frame (which needs auth).
+        if code == "token_expired":
+            raise _http_error(401, ERROR_TOKEN_EXPIRED)
+        raise _http_error(401, ERROR_UNAUTHORIZED)
 
     def require_near(request: Request, auth: AuthState = Depends(require_auth)) -> AuthState:
         rssi: float | None = None

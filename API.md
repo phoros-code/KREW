@@ -86,4 +86,10 @@ All error responses follow the same shape so the phone app can handle them unifo
 { "error": { "code": "unauthorized", "message": "Invalid or expired token" } }
 ```
 
+401 carries either `unauthorized` (bad/unknown token) or `token_expired`
+(the pairing token reached its absolute age — re-pair from the laptop).
+The phone app treats **any** 401 from `/command` or `/events` as "show the
+re-pair prompt" directly, without waiting for a `token_expired` SSE frame
+(which itself requires auth to receive).
+
 Design the phone app's error *states* for each of these — see `UI_UX_GUIDE.md`, "design real error states" — rather than surfacing the raw JSON.

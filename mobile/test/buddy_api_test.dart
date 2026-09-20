@@ -14,6 +14,15 @@ void main() {
       expect(err.statusCode, 401);
     });
 
+    test('parses the 401 token_expired envelope', () {
+      final err = BuddyApiException.fromRaw(
+        401,
+        '{"error": {"code": "token_expired", "message": "Pairing token exceeded its absolute age"}}',
+      );
+      expect(err.code, 'token_expired');
+      expect(err.statusCode, 401);
+    });
+
     test('parses the 403 proximity envelope', () {
       final err = BuddyApiException.fromRaw(
         403,

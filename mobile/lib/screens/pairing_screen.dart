@@ -101,6 +101,8 @@ class _PairingScreenState extends State<PairingScreen> {
     switch (e.code) {
       case 'unauthorized':
         return 'Wrong token — the laptop said "${e.message}". Check for a trailing space, or generate a fresh token on the laptop and try again.';
+      case 'token_expired':
+        return 'That token reached its age limit — the laptop said "${e.message}". Generate a fresh token on the laptop and pair again.';
       case 'locked_out':
         return 'Too many wrong attempts — the laptop is temporarily locked. Wait a few minutes, then try again.';
       case 'unreachable':

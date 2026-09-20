@@ -4,7 +4,7 @@ You are working in the `everyday-buddy` repo. Read this file, `PROJECT_SPEC.md`,
 
 ## What this is
 
-A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled from their phone over LAN. No cloud LLM calls, no telemetry. Full spec: `PROJECT_SPEC.md`. Full architecture: `ARCHITECTURE.md`.
+A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled from their phone over LAN. No cloud LLM calls, no telemetry (optional FCM background push excepted — see `SECURITY.md`). Full spec: `PROJECT_SPEC.md`. Full architecture: `ARCHITECTURE.md`.
 
 ## Non-negotiable rules for this codebase
 
