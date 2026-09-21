@@ -179,4 +179,82 @@ void main() {
       api.close();
     });
   });
+
+  group('BuddyApi screen consent flow', () {
+    BuddyApi apiWith(MockClient client) =>
+        BuddyApi(host: '192.168.1.10', token: 't', client: client);
+
+    test('requestScreenConsent returns the pending id', () async {
+      String? seenPath;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenPath = req.url.path;
+          return http.Response('{"consent_id": "abc123", "status": "pending"}', 200);
+        }),
+      );
+      expect(await api.requestScreenConsent(), 'abc123');
+      expect(seenPath, '/screen/consent');
+      api.close();
+    });
+
+    test('consent request 403 surfaces as forbidden', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "forbidden", "message": "near only"}}',
+          403,
+        )),
+      );
+      expect(
+        api.requestScreenConsent(),
+        throwsA(isA<BuddyApiException>().having((e) => e.code, 'code', 'forbidden')),
+      );
+      api.close();
+    });
+
+    test('checkScreen sends the grant and maps pending to consentRequired', () async {
+      String? seenQuery;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenQuery = req.url.query;
+          return http.Response(
+            '{"error": {"code": "consent_required", "message": "needs approval"}}',
+            403,
+          );
+        }),
+      );
+      expect(
+        await api.checkScreen(consentId: 'abc123'),
+        ScreenStatus.consentRequired,
+      );
+      expect(seenQuery, contains('consent_id=abc123'));
+      api.close();
+    });
+
+    test('checkScreen maps denied grants to consentDenied', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "consent_denied", "message": "denied"}}',
+          403,
+        )),
+      );
+      expect(
+        await api.checkScreen(consentId: 'dead'),
+        ScreenStatus.consentDenied,
+      );
+      api.close();
+    });
+
+    test('checkScreen without a grant probes the bare endpoint', () async {
+      String? seenQuery;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenQuery = req.url.query;
+          return http.Response('jpeg-bytes', 200);
+        }),
+      );
+      expect(await api.checkScreen(), ScreenStatus.available);
+      expect(seenQuery, isEmpty);
+      api.close();
+    });
+  });
 }

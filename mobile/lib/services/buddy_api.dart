@@ -115,6 +115,12 @@ enum ScreenStatus {
   /// 403 — near-only endpoint, device is far.
   forbidden,
 
+  /// 403 consent_required — request created, laptop has not approved yet.
+  consentRequired,
+
+  /// 403 consent_denied — laptop denied this request; start a new one.
+  consentDenied,
+
   /// 401 — token invalid/expired.
   unauthorized,
 
@@ -389,14 +395,64 @@ class BuddyApi {
     }
   }
 
-  /// Probe /screen status without starting a stream. The widget only calls
-  /// this after explicit consent, and never auto-starts on screen open.
-  Future<ScreenStatus> checkScreen() async {
-    final http.Client probe = http.Client();
+  /// POST /screen/consent — create a preview request (near only).
+  ///
+  /// Returns the consent id in PENDING state. The laptop approves out of
+  /// band (curl approve endpoint, v1.1: OS prompt); the app then polls
+  /// [checkScreen] with the id until it flips to available/denied.
+  Future<String> requestScreenConsent() async {
+    http.Response resp;
     try {
-      final http.Request request = http.Request('GET', _uri('/screen'));
+      resp = await _client
+          .post(_uri('/screen/consent'), headers: _authHeaders)
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw const BuddyApiException(
+        code: 'unreachable',
+        message: 'No route to the laptop — check the IP and Wi-Fi.',
+      );
+    } on http.ClientException {
+      throw const BuddyApiException(
+        code: 'unreachable',
+        message: 'No route to the laptop — check the IP and Wi-Fi.',
+      );
+    }
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
+    }
+    try {
+      final dynamic decoded = jsonDecode(resp.body);
+      if (decoded is Map<String, dynamic>) {
+        final dynamic id = decoded['consent_id'];
+        if (id is String && id.isNotEmpty) return id;
+      }
+    } on FormatException {
+      // Fall through to bad_response below.
+    }
+    throw const BuddyApiException(
+      code: 'bad_response',
+      message: 'The laptop sent a consent reply the app could not read.',
+    );
+  }
+
+  /// Probe /screen status without starting a stream. Never auto-starts on
+  /// screen open: the widget calls this only after explicit consent, and
+  /// passes the approved grant as [consentId] (required since the server
+  /// consent gate landed — without it every probe is consent_required).
+  Future<ScreenStatus> checkScreen({String? consentId}) async {
+    try {
+      Uri uri = _uri('/screen');
+      if (consentId != null && consentId.isNotEmpty) {
+        uri = uri.replace(
+          queryParameters: <String, String>{'consent_id': consentId},
+        );
+      }
+      final http.Request request = http.Request('GET', uri);
       request.headers.addAll(_authHeaders);
-      final http.StreamedResponse resp = await probe
+      // Streamed send + cancel: a 200 is an infinite MJPEG body, so a
+      // plain get() would download forever. Uses _client (mockable);
+      // lifecycle stays with close().
+      final http.StreamedResponse resp = await _client
           .send(request)
           .timeout(_timeout);
       // Drain-or-cancel: read error bodies fully, cancel real streams.
@@ -414,6 +470,10 @@ class BuddyApi {
           return ScreenStatus.notImplemented;
         case 'forbidden':
           return ScreenStatus.forbidden;
+        case 'consent_required':
+          return ScreenStatus.consentRequired;
+        case 'consent_denied':
+          return ScreenStatus.consentDenied;
         case 'unauthorized':
         case 'token_expired':
           return ScreenStatus.unauthorized;
@@ -426,8 +486,6 @@ class BuddyApi {
       return ScreenStatus.unreachable;
     } on http.ClientException {
       return ScreenStatus.unreachable;
-    } finally {
-      probe.close();
     }
   }
 

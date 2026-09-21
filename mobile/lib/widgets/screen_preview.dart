@@ -8,9 +8,8 @@ import '../theme/buddy_theme.dart';
 ///
 /// SECURITY.md + API.md rules enforced here:
 /// - The stream NEVER auto-starts on screen open. A network call happens
-///   only after the user taps the consent button.
-/// - The server returns 501 until the Phase 3 MJPEG work lands — that error
-///   state is designed, not a crash.
+///   only after the user taps the consent button, and the laptop must
+///   approve the request out of band before ANY /screen bytes flow.
 /// - FAR proximity blocks the preview (near-only endpoint → 403).
 class ScreenPreview extends StatefulWidget {
   const ScreenPreview({
@@ -26,24 +25,80 @@ class ScreenPreview extends StatefulWidget {
   State<ScreenPreview> createState() => _ScreenPreviewState();
 }
 
-enum _PreviewPhase { needsConsent, checking, notImplemented, error, ready }
+enum _PreviewPhase {
+  needsConsent,
+  requesting,
+  awaitingApproval,
+  checking,
+  notImplemented,
+  error,
+  ready,
+}
 
 class _ScreenPreviewState extends State<ScreenPreview> {
   _PreviewPhase _phase = _PreviewPhase.needsConsent;
+  String? _consentId;
   String _errorMessage = '';
 
-  Future<void> _requestWithConsent() async {
+  /// Step 1: create the consent request on the laptop.
+  Future<void> _requestConsent() async {
     if (widget.api == null) return;
+    setState(() {
+      _phase = _PreviewPhase.requesting;
+      _errorMessage = '';
+    });
+    try {
+      final String id = await widget.api!.requestScreenConsent();
+      if (!mounted) return;
+      setState(() {
+        _consentId = id;
+        _phase = _PreviewPhase.awaitingApproval;
+      });
+    } on BuddyApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _consentId = null;
+        _phase = _PreviewPhase.error;
+        _errorMessage = _consentRequestError(e);
+      });
+    }
+  }
+
+  String _consentRequestError(BuddyApiException e) {
+    switch (e.code) {
+      case 'forbidden':
+        return 'Screen preview needs near proximity. Move closer to the laptop and try again.';
+      case 'unauthorized':
+      case 'token_expired':
+        return 'The pairing token was rejected. Re-pair from the Pair tab.';
+      default:
+        return e.message;
+    }
+  }
+
+  /// Step 2: poll the grant — approved flips to ready, pending stays waiting.
+  Future<void> _checkApproval() async {
+    final BuddyApi? api = widget.api;
+    final String? id = _consentId;
+    if (api == null || id == null) return;
     setState(() {
       _phase = _PreviewPhase.checking;
       _errorMessage = '';
     });
-    final ScreenStatus status = await widget.api!.checkScreen();
+    final ScreenStatus status = await api.checkScreen(consentId: id);
     if (!mounted) return;
     setState(() {
       switch (status) {
         case ScreenStatus.available:
           _phase = _PreviewPhase.ready;
+        case ScreenStatus.consentRequired:
+          // Still pending on the laptop — back to waiting, id kept.
+          _phase = _PreviewPhase.awaitingApproval;
+        case ScreenStatus.consentDenied:
+          _consentId = null; // denied grants never flip — start over
+          _phase = _PreviewPhase.error;
+          _errorMessage =
+              'The laptop denied this preview request. Request again if that was a mistake.';
         case ScreenStatus.notImplemented:
           _phase = _PreviewPhase.notImplemented;
         case ScreenStatus.forbidden:
@@ -154,8 +209,65 @@ class _ScreenPreviewState extends State<ScreenPreview> {
               ),
               const SizedBox(height: BuddySpacing.s4),
               ElevatedButton(
-                onPressed: _requestWithConsent,
-                child: const Text('I understand — start preview'),
+                onPressed: _requestConsent,
+                child: const Text('Request preview'),
+              ),
+            ],
+          ),
+        );
+      case _PreviewPhase.requesting:
+        return _Frame(
+          hairline: hairline,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const SizedBox(
+                width: BuddySpacing.s5,
+                height: BuddySpacing.s5,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: BuddyColors.primary,
+                ),
+              ),
+              const SizedBox(height: BuddySpacing.s3),
+              Text('Requesting preview…', style: body),
+            ],
+          ),
+        );
+      case _PreviewPhase.awaitingApproval:
+        return _Frame(
+          hairline: hairline,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Icon(Icons.hourglass_top_outlined, size: 20, color: muted),
+                  const SizedBox(width: BuddySpacing.s2),
+                  Text(
+                    'Waiting for laptop approval',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+              ),
+              const SizedBox(height: BuddySpacing.s2),
+              Text(
+                'The request is on the laptop — approve it there, then check again. Nothing streams until approval lands.',
+                style: small,
+              ),
+              const SizedBox(height: BuddySpacing.s4),
+              ElevatedButton(
+                onPressed: _checkApproval,
+                child: const Text('Check again'),
+              ),
+              const SizedBox(height: BuddySpacing.s2),
+              OutlinedButton(
+                onPressed: () => setState(() {
+                  _consentId = null;
+                  _phase = _PreviewPhase.needsConsent;
+                }),
+                child: const Text('Cancel request'),
               ),
             ],
           ),
@@ -180,7 +292,8 @@ class _ScreenPreviewState extends State<ScreenPreview> {
           ),
         );
       case _PreviewPhase.notImplemented:
-        // Designed 501 state: the server stub ships before the MJPEG work.
+        // Defensive 501 state: current servers implement /screen, but an
+        // older laptop build answers not-implemented instead of streaming.
         return _Frame(
           hairline: hairline,
           child: Column(
@@ -201,7 +314,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
               ),
               const SizedBox(height: BuddySpacing.s4),
               OutlinedButton(
-                onPressed: _requestWithConsent,
+                onPressed: _requestConsent,
                 child: const Text('Retry'),
               ),
             ],
@@ -232,7 +345,9 @@ class _ScreenPreviewState extends State<ScreenPreview> {
               ),
               const SizedBox(height: BuddySpacing.s4),
               OutlinedButton(
-                onPressed: _requestWithConsent,
+                onPressed: () => _consentId != null
+                    ? _checkApproval()
+                    : _requestConsent(),
                 child: const Text('Retry'),
               ),
             ],
@@ -267,9 +382,10 @@ class _ScreenPreviewState extends State<ScreenPreview> {
               ),
               const SizedBox(height: BuddySpacing.s4),
               OutlinedButton(
-                onPressed: () => setState(
-                  () => _phase = _PreviewPhase.needsConsent,
-                ),
+                onPressed: () => setState(() {
+                  _consentId = null;
+                  _phase = _PreviewPhase.needsConsent;
+                }),
                 child: const Text('Stop preview'),
               ),
             ],
