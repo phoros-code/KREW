@@ -9,6 +9,7 @@ import 'screens/chat_screen.dart';
 import 'screens/pairing_screen.dart';
 import 'screens/preview_screen.dart';
 import 'screens/task_list_screen.dart';
+import 'services/ble_proximity.dart';
 import 'services/buddy_api.dart';
 import 'services/proximity_service.dart';
 import 'services/secure_store.dart';
@@ -37,10 +38,13 @@ class _BuddyAppState extends State<BuddyApp> {
 
   BuddyApi? _api;
   String? _savedHost;
+  String? _btDeviceId;
   bool _booting = true;
   int _tab = 0;
 
   StreamSubscription<BuddyEvent>? _subscription;
+  BleProximityReader? _bleReader;
+  StreamSubscription<int?>? _bleSub;
   String? _streamError;
   bool _streamConnected = false;
   int _connectAttempt = 0;
@@ -62,13 +66,18 @@ class _BuddyAppState extends State<BuddyApp> {
   Future<void> _boot() async {
     final PairingInfo? saved = await _store.readPairing();
     if (!mounted) return;
+    _btDeviceId = await _store.readBtDeviceId();
+    if (!mounted) return;
     setState(() {
       _booting = false;
       if (saved != null) {
         _attachApi(saved.host, saved.token, initialTab: 1);
       }
     });
-    if (saved != null) _connectEvents();
+    if (saved != null) {
+      _connectEvents();
+      _refreshProximityConfig();
+    }
   }
 
   void _attachApi(String host, String token, {int? initialTab}) {
@@ -92,11 +101,56 @@ class _BuddyAppState extends State<BuddyApp> {
     // everywhere else: boot, errors, and unreadable signals all yield FAR).
     _proximity.markNear();
     _connectEvents();
+    _store.readBtDeviceId().then((String? id) {
+      if (!mounted) return;
+      _btDeviceId = id;
+      if (mounted) setState(() {});
+      _refreshProximityConfig();
+    });
+  }
+
+  /// Phase 4.2: fetch mode + threshold once per pairing/boot, then start
+  /// the BLE watch only when the server is in lan_plus_bluetooth AND a
+  /// device id was saved. Anything missing → BLE stays off (fail closed).
+  Future<void> _refreshProximityConfig() async {
+    final BuddyApi? api = _api;
+    if (api == null) return;
+    try {
+      final ProximityConfig cfg = await api.fetchProximityConfig();
+      _proximity.setThreshold(cfg.rssiNearThreshold);
+      if (cfg.usesBluetooth) {
+        await _startBleWatch();
+      } else {
+        await _stopBleWatch();
+      }
+    } on BuddyApiException {
+      // Keep the compiled-in default threshold; the indicator degrades to
+      // server-403 behavior instead of breaking pairing.
+      await _stopBleWatch();
+    }
+  }
+
+  Future<void> _startBleWatch() async {
+    final String? id = _btDeviceId;
+    if (id == null || id.isEmpty) return;
+    _bleReader ??= liveBleProximityReader();
+    await _bleSub?.cancel();
+    _bleSub = _bleReader!.rssi.listen((int? rssi) {
+      _proximity.updateRssi(rssi);
+    });
+    await _bleReader!.start(id);
+  }
+
+  Future<void> _stopBleWatch() async {
+    await _bleSub?.cancel();
+    _bleSub = null;
+    await _bleReader?.stop();
   }
 
   Future<void> _onUnpair() async {
     await _store.clear();
     await _subscription?.cancel();
+    await _stopBleWatch();
     _messengerKey.currentState?.clearSnackBars();
     _subscription = null;
     _api?.close();
@@ -104,6 +158,7 @@ class _BuddyAppState extends State<BuddyApp> {
     if (!mounted) return;
     setState(() {
       _savedHost = null;
+      _btDeviceId = null;
       _tab = 0;
       _events.clear();
       _tasks.clear();
@@ -203,7 +258,10 @@ class _BuddyAppState extends State<BuddyApp> {
       );
     }
     try {
-      final CommandResult result = await api.postCommand(text);
+      final CommandResult result = await api.postCommand(
+        text,
+        rssi: _proximity.lastRssi?.toString(),
+      );
       if (!mounted) return;
       setState(() => _tasks.setQueued(result.taskId, text));
       _proximity.setOnline();
@@ -221,6 +279,8 @@ class _BuddyAppState extends State<BuddyApp> {
     _proximity.removeListener(_onProximityChanged);
     _proximity.dispose();
     _subscription?.cancel();
+    _bleSub?.cancel();
+    _bleReader?.dispose();
     _api?.close();
     super.dispose();
   }
@@ -254,6 +314,7 @@ class _BuddyAppState extends State<BuddyApp> {
                   PairingScreen(
                     store: _store,
                     initialHost: _savedHost,
+                    initialBtDeviceId: _btDeviceId,
                     onPaired: _onPaired,
                   ),
                   ChatScreen(

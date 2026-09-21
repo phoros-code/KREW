@@ -12,6 +12,7 @@ dependencies:
   http: ^1.2.0
   flutter_secure_storage: ^9.0.0
   google_fonts: ^6.1.0
+  flutter_blue_plus: ^2.3.12
 
 dev_dependencies:
   flutter_test:

@@ -57,6 +57,33 @@ def test_health_unauthenticated_and_minimal(app_lan) -> None:
     assert resp.json() == {"status": "ok"}
 
 
+def test_proximity_config_needs_token(app_lan) -> None:
+    client = TestClient(app_lan)
+    resp = client.get("/proximity")
+    assert resp.status_code == 401
+
+
+def test_proximity_config_shape(app_lan) -> None:
+    """Phase 4.2: phone fetches mode + threshold once after pairing."""
+    client = TestClient(app_lan)
+    resp = client.get("/proximity", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["mode"] == "lan_only"
+    assert body["rssi_near_threshold"] == -60
+    assert "token" not in resp.text  # non-sensitive by construction
+
+
+def test_proximity_config_readable_in_far_mode(app_bt) -> None:
+    """The indicator needs the threshold MOST when far — far still gets 200."""
+    client = TestClient(app_bt)
+    resp = client.get("/proximity", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "lan_plus_bluetooth"
+    # ...while a near-only endpoint from the same far client is still 403.
+    assert client.post("/command", json={"text": "hi"}, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 403
+
+
 def test_command_requires_token(app_lan) -> None:
     client = TestClient(app_lan)
     resp = client.post("/command", json={"text": "hi"})

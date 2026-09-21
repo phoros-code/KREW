@@ -95,6 +95,16 @@ class CommandResult {
   final String status;
 }
 
+/// Authenticated proximity config from GET /proximity (API.md).
+class ProximityConfig {
+  const ProximityConfig({required this.mode, required this.rssiNearThreshold});
+
+  final String mode;
+  final int rssiNearThreshold;
+
+  bool get usesBluetooth => mode == 'lan_plus_bluetooth';
+}
+
 enum ScreenStatus {
   /// GET /screen returned 200 — an MJPEG stream is available.
   available,
@@ -186,6 +196,56 @@ class BuddyApi {
         message: 'No route to the laptop — check the IP and Wi-Fi.',
       );
     }
+  }
+
+  /// Proximity threshold + mode (Phase 4.2, API.md GET /proximity).
+  ///
+  /// Authenticated but near-or-far: the indicator needs the threshold most
+  /// when far. Returns the server's `rssi_near_threshold` so the phone
+  /// applies the same limit the server gates on — single source of truth
+  /// stays in config/security.yaml.
+  Future<ProximityConfig> fetchProximityConfig() async {
+    http.Response resp;
+    try {
+      resp = await _client
+          .get(_uri('/proximity'), headers: _authHeaders)
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw const BuddyApiException(
+        code: 'unreachable',
+        message: 'No route to the laptop — check the IP and Wi-Fi.',
+      );
+    } on http.ClientException {
+      throw const BuddyApiException(
+        code: 'unreachable',
+        message: 'No route to the laptop — check the IP and Wi-Fi.',
+      );
+    }
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
+    }
+    try {
+      final dynamic decoded = jsonDecode(resp.body);
+      if (decoded is Map<String, dynamic>) {
+        final dynamic rawThreshold = decoded['rssi_near_threshold'];
+        final dynamic rawMode = decoded['mode'];
+        final int? threshold = rawThreshold is int
+            ? rawThreshold
+            : int.tryParse('$rawThreshold');
+        if (threshold != null) {
+          return ProximityConfig(
+            mode: rawMode is String ? rawMode : 'lan_only',
+            rssiNearThreshold: threshold,
+          );
+        }
+      }
+    } on FormatException {
+      // Fall through to bad_response below.
+    }
+    throw const BuddyApiException(
+      code: 'bad_response',
+      message: 'The laptop sent a proximity config the app could not read.',
+    );
   }
 
   /// POST /command (near only). Throws 401/403/429 typed from the error shape.

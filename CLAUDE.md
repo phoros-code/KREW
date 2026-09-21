@@ -65,6 +65,12 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Stream-test lesson (paid for in full): never `break` out of httpx `aiter_bytes()` to "hold a stream open" — the break runs `aclose()` and drops the connection under test. Drain continuously in a task group, cancel to disconnect.
 - Flutter SDK 3.47.5 installed locally (`C:\src\flutter`, zip verified byte-exact). `flutter analyze`: clean (fixed `jetBrainsMono` casing error + 9 lint infos). `flutter test`: 33 passed locally. Next: device run, then Phase 4 hardware items (BLE calibration, TLS rejection, consent stream check).
 
+## Session notes (2026-09-21, Phase 4 BLE)
+
+- BLE proximity reader done: `BleProximityReader` (flutter_blue_plus 2.3.12, injectable scan seams, stale→null fail-closed) + optional laptop-BT-ID field on pairing screen + secure storage + app wiring (config fetch on pair/boot, watch start/stop, X-RSSI on /command) + `GET /proximity` read-only endpoint (auth, near-or-far) + API.md. 114 pytest + 45 dart tests pass, analyze clean.
+- ⚠️ HUMAN REVIEW (rule 6): new `GET /proximity` endpoint in `server/main.py` — read-only, returns mode+threshold only, no token material. No platform folders yet (`android/`, `ios/` absent) so BLE permissions + device run still pending — needs `flutter create --platforms` scaffolding next.
+- Remaining v0.1.0: platform scaffolding + BLE permissions, device run, hardware loop (voice demo, phone-on-LAN, BLE calibration, TLS rejection, consent check), final pass (SECURITY.md limits, UI audit), tag v0.1.0.
+
 ## Session notes (2026-09-19)
 
 - Done: full Phase 0 per PROMPTS.md. License picked: MIT (`LICENSE` added).

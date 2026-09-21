@@ -19,11 +19,15 @@ class PairingScreen extends StatefulWidget {
     required this.store,
     required this.onPaired,
     this.initialHost,
+    this.initialBtDeviceId,
   });
 
   final SecureStore store;
   final void Function(String host, String token) onPaired;
   final String? initialHost;
+
+  /// Previously saved laptop Bluetooth id, if any (prefill only).
+  final String? initialBtDeviceId;
 
   @override
   State<PairingScreen> createState() => _PairingScreenState();
@@ -33,6 +37,7 @@ class _PairingScreenState extends State<PairingScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _hostController;
   late final TextEditingController _tokenController;
+  late final TextEditingController _btController;
   bool _testing = false;
   bool _obscured = true;
   String? _errorMessage;
@@ -43,12 +48,14 @@ class _PairingScreenState extends State<PairingScreen> {
     super.initState();
     _hostController = TextEditingController(text: widget.initialHost ?? '');
     _tokenController = TextEditingController();
+    _btController = TextEditingController(text: widget.initialBtDeviceId ?? '');
   }
 
   @override
   void dispose() {
     _hostController.dispose();
     _tokenController.dispose();
+    _btController.dispose();
     super.dispose();
   }
 
@@ -82,6 +89,8 @@ class _PairingScreenState extends State<PairingScreen> {
     try {
       await probe.validatePairing();
       await widget.store.savePairing(host: host, token: token);
+      // Optional: blank clears the saved id and disables the BLE watch.
+      await widget.store.saveBtDeviceId(_btController.text);
       if (!mounted) return;
       widget.onPaired(host, token);
     } on BuddyApiException catch (e) {
@@ -211,6 +220,31 @@ class _PairingScreenState extends State<PairingScreen> {
             const SizedBox(height: BuddySpacing.s2),
             Text(
               'Saved in secure storage (Keystore / Keychain), never in plain files. Port defaults to 8443 over HTTPS.',
+              style: small,
+            ),
+            const SizedBox(height: BuddySpacing.s4),
+            Text(
+              'Laptop Bluetooth ID (optional)',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: BuddySpacing.s2),
+            TextFormField(
+              controller: _btController,
+              autocorrect: false,
+              enableSuggestions: false,
+              keyboardType: TextInputType.text,
+              decoration: const InputDecoration(
+                hintText: 'AA:BB:CC:DD:EE:FF (Android) or UUID (iOS)',
+                prefixIcon: Icon(Icons.bluetooth_outlined, size: 18),
+              ),
+              style: BuddyTheme.mono(
+                dark ? BuddyColors.inkOnDark : BuddyColors.inkOnLight,
+                size: 13.5,
+              ),
+            ),
+            const SizedBox(height: BuddySpacing.s2),
+            Text(
+              'Enables the near/far indicator from Bluetooth signal strength. Leave blank to skip it — proximity then follows server responses only. Find the ID in the laptop OS Bluetooth settings; the laptop must stay discoverable or paired.',
               style: small,
             ),
 

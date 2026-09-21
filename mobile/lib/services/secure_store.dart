@@ -17,6 +17,11 @@ class SecureStore {
   static const String hostKey = 'buddy_host';
   static const String tokenKey = 'buddy_token';
 
+  /// Optional laptop Bluetooth id for the Phase 4.1 RSSI watch
+  /// (Android: MAC, iOS: UUID). Absent/blank = BLE watch stays off and
+  /// proximity falls back to server-403 behavior (fail closed, FAR).
+  static const String btDeviceKey = 'buddy_bt_device';
+
   final FlutterSecureStorage _storage;
 
   Future<PairingInfo?> readPairing() async {
@@ -36,8 +41,24 @@ class SecureStore {
     await _storage.write(key: tokenKey, value: token.trim());
   }
 
+  Future<String?> readBtDeviceId() async {
+    final String? id = await _storage.read(key: btDeviceKey);
+    if (id == null || id.trim().isEmpty) return null;
+    return id.trim();
+  }
+
+  Future<void> saveBtDeviceId(String? id) async {
+    final String trimmed = (id ?? '').trim();
+    if (trimmed.isEmpty) {
+      await _storage.delete(key: btDeviceKey);
+    } else {
+      await _storage.write(key: btDeviceKey, value: trimmed);
+    }
+  }
+
   Future<void> clear() async {
     await _storage.delete(key: hostKey);
     await _storage.delete(key: tokenKey);
+    await _storage.delete(key: btDeviceKey);
   }
 }

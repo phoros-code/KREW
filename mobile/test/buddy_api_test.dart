@@ -1,6 +1,8 @@
 import 'package:everyday_buddy/services/buddy_api.dart';
 import 'package:everyday_buddy/services/proximity_service.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 void main() {
   group('BuddyApiException.fromRaw', () {
@@ -101,6 +103,80 @@ void main() {
       expect(proximity.commandsAllowed, isTrue);
       proximity.markFar();
       expect(proximity.commandsAllowed, isFalse);
+    });
+
+    test('server threshold replaces the compiled-in default', () {
+      final proximity = ProximityService();
+      expect(proximity.rssiNearThreshold, -60);
+      proximity.setThreshold(-70);
+      expect(proximity.rssiNearThreshold, -70);
+      proximity.updateRssi(-65); // between old and new limit
+      expect(proximity.mode, ProximityMode.near);
+    });
+
+    test('last RSSI is remembered for the decorative X-RSSI header', () {
+      final proximity = ProximityService();
+      expect(proximity.lastRssi, isNull);
+      proximity.updateRssi(-55);
+      expect(proximity.lastRssi, -55);
+      proximity.updateRssi(null);
+      expect(proximity.lastRssi, isNull);
+    });
+  });
+
+  group('BuddyApi.fetchProximityConfig', () {
+    BuddyApi apiWith(MockClient client) =>
+        BuddyApi(host: '192.168.1.10', token: 't', client: client);
+
+    test('parses mode + threshold on 200', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"mode": "lan_plus_bluetooth", "rssi_near_threshold": -65}',
+          200,
+        )),
+      );
+      final cfg = await api.fetchProximityConfig();
+      expect(cfg.mode, 'lan_plus_bluetooth');
+      expect(cfg.rssiNearThreshold, -65);
+      expect(cfg.usesBluetooth, isTrue);
+      api.close();
+    });
+
+    test('lan_only mode reports no bluetooth', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"mode": "lan_only", "rssi_near_threshold": -60}',
+          200,
+        )),
+      );
+      final cfg = await api.fetchProximityConfig();
+      expect(cfg.usesBluetooth, isFalse);
+      api.close();
+    });
+
+    test('401 surfaces as unauthorized (re-pair prompt)', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "unauthorized", "message": "nope"}}}',
+          401,
+        )),
+      );
+      expect(
+        api.fetchProximityConfig(),
+        throwsA(isA<BuddyApiException>().having((e) => e.code, 'code', 'unauthorized')),
+      );
+      api.close();
+    });
+
+    test('garbage body becomes bad_response, never a crash', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response('not-json', 200)),
+      );
+      expect(
+        api.fetchProximityConfig(),
+        throwsA(isA<BuddyApiException>().having((e) => e.code, 'code', 'bad_response')),
+      );
+      api.close();
     });
   });
 }

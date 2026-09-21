@@ -20,6 +20,19 @@ Unauthenticated. Returns only whether the server is up — nothing about the age
 { "status": "ok" }
 ```
 
+## `GET /proximity`
+
+**Proximity: near or far.** Authenticated, read-only proximity config for the
+phone's near/far indicator (Phase 4): the phone fetches this once after
+pairing and applies `rssi_near_threshold` locally to its BLE RSSI readings.
+Non-sensitive by construction (mode + threshold only — never the token).
+Readable in FAR mode on purpose: the indicator needs the threshold most
+when far.
+
+```json
+{ "mode": "lan_plus_bluetooth", "rssi_near_threshold": -60 }
+```
+
 ## `POST /command`
 
 **Proximity: near only.**

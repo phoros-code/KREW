@@ -14,7 +14,23 @@ class ProximityService extends ChangeNotifier {
   ProximityService({int rssiNearThreshold = -60})
     : _rssiNearThreshold = rssiNearThreshold;
 
-  final int _rssiNearThreshold;
+  int _rssiNearThreshold;
+
+  /// Last BLE RSSI seen (null = none yet, or unreadable). Decorative-only:
+  /// sent as X-RSSI so the server can gate, never trusted server-side.
+  int? _lastRssi;
+  int? get lastRssi => _lastRssi;
+
+  int get rssiNearThreshold => _rssiNearThreshold;
+
+  /// Phase 4.2: threshold arrives from GET /proximity after pairing —
+  /// the single source of truth stays in config/security.yaml.
+  void setThreshold(int threshold) {
+    if (_rssiNearThreshold != threshold) {
+      _rssiNearThreshold = threshold;
+      notifyListeners();
+    }
+  }
 
   ProximityMode _mode = ProximityMode.far;
   BuddyConnection _connection = BuddyConnection.unknown;
@@ -67,6 +83,7 @@ class ProximityService extends ChangeNotifier {
 
   /// Phase 4 hook: null/unreadable RSSI always yields FAR (fail closed).
   void updateRssi(int? rssi, {int? threshold}) {
+    _lastRssi = rssi;
     final int limit = threshold ?? _rssiNearThreshold;
     if (rssi == null) {
       markFar();

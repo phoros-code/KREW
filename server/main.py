@@ -316,6 +316,20 @@ def create_app(
     def health() -> dict:
         return {"status": "ok"}
 
+    @app.get("/proximity")
+    def proximity(_auth: AuthState = Depends(require_auth)) -> dict:
+        """Authenticated proximity config for the phone indicator (Phase 4).
+
+        Read-only and non-sensitive (mode + threshold only — never the token).
+        Allowed in BOTH near and far: the indicator needs it most when far.
+        The phone applies the threshold locally to its BLE RSSI; the X-RSSI
+        it sends back stays decorative (human decision 1).
+        """
+        return {
+            "mode": prox_cfg.get("mode", "lan_only"),
+            "rssi_near_threshold": prox_cfg.get("rssi_near_threshold", -60),
+        }
+
     @app.post("/command")
     def command(body: dict, background: BackgroundTasks, _auth: AuthState = Depends(require_near)) -> dict:
         from buddy_core import orchestrator
