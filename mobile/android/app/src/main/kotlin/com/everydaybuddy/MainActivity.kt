@@ -1,4 +1,4 @@
-package com.example.everyday_buddy
+package com.everydaybuddy
 
 import io.flutter.embedding.android.FlutterActivity
 
