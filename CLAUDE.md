@@ -68,8 +68,8 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 ## Session notes (2026-09-21, Phase 4 BLE)
 
 - BLE proximity reader done: `BleProximityReader` (flutter_blue_plus 2.3.12, injectable scan seams, stale→null fail-closed) + optional laptop-BT-ID field on pairing screen + secure storage + app wiring (config fetch on pair/boot, watch start/stop, X-RSSI on /command) + `GET /proximity` read-only endpoint (auth, near-or-far) + API.md. 114 pytest + 45 dart tests pass, analyze clean.
-- ⚠️ HUMAN REVIEW (rule 6): new `GET /proximity` endpoint in `server/main.py` — read-only, returns mode+threshold only, no token material. No platform folders yet (`android/`, `ios/` absent) so BLE permissions + device run still pending — needs `flutter create --platforms` scaffolding next.
-- Remaining v0.1.0: platform scaffolding + BLE permissions, device run, hardware loop (voice demo, phone-on-LAN, BLE calibration, TLS rejection, consent check), final pass (SECURITY.md limits, UI audit), tag v0.1.0.
+- ⚠️ HUMAN REVIEW (rule 6): new `GET /proximity` endpoint in `server/main.py` — read-only, returns mode+threshold only, no token material. Platform scaffolding done (`flutter create --platforms=android,ios`; BLE permissions in manifest + plist; template widget_test/README removed). `flutter doctor`: NO Android SDK here — APK builds need Android Studio on the device-run machine. App namespace still `com.example.*` placeholder (rename before any store/distribution build).
+- Remaining v0.1.0: device run (needs Android SDK + physical phone), hardware loop (voice demo, phone-on-LAN, BLE calibration, TLS rejection, consent check), final pass (SECURITY.md limits, UI audit), tag v0.1.0.
 
 ## Session notes (2026-09-19)
 
