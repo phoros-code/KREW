@@ -68,8 +68,14 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 ## Session notes (2026-09-21, Phase 4 BLE)
 
 - BLE proximity reader done: `BleProximityReader` (flutter_blue_plus 2.3.12, injectable scan seams, stale→null fail-closed) + optional laptop-BT-ID field on pairing screen + secure storage + app wiring (config fetch on pair/boot, watch start/stop, X-RSSI on /command) + `GET /proximity` read-only endpoint (auth, near-or-far) + API.md. 114 pytest + 45 dart tests pass, analyze clean.
-- ⚠️ HUMAN REVIEW (rule 6): new `GET /proximity` endpoint in `server/main.py` — read-only, returns mode+threshold only, no token material. Platform scaffolding done (`flutter create --platforms=android,ios`; BLE permissions in manifest + plist; template widget_test/README removed). `flutter doctor`: NO Android SDK here — APK builds need Android Studio on the device-run machine. App namespace still `com.example.*` placeholder (rename before any store/distribution build).
-- Remaining v0.1.0: device run (needs Android SDK + physical phone), hardware loop (voice demo, phone-on-LAN, BLE calibration, TLS rejection, consent check), final pass (SECURITY.md limits, UI audit), tag v0.1.0.
+## Session notes (2026-09-21, dispatches A/B/C)
+
+- DISPATCH A (`945a68c`): Android SDK via cmdline-tools only (LOCALAPPDATA\Android\Sdk: platform-tools 37, android-36, build-tools 36, licenses accepted; `flutter config --android-sdk` set; doctor clean for Android toolchain). Namespace `com.example.*` → `com.everydaybuddy` (gradle, Kotlin move, pbxproj; zero `com.example` hits left). ⚠️ Still outstanding: full JDK 17 with `javac` (only a JRE runtime was available) — required before `flutter build apk` works.
+- DISPATCH B-UX (`f169907`): self-audit 4/4 PASS; token-fidelity fixes on pair/chat/tasks (container radii, labelLarge titles). Analyze + 45 tests green at the time.
+- DISPATCH B-backend (review-only, applied as `989e2c8`): SECURITY.md FCM note was STALE (claimed FCM ships — fixed to in-app-SSE-only) + RSSI note completed (GET /proximity, stale→null, X-RSSI single-use) + L62 tweak; `issued_at` runtime-managed note + `token_rotation_days` reserved note in example + CONFIG.md; `tls.*`/`bind_*` confirmed scripts-consumed (serve.ps1 hardcodes 8443 — noted). security.yaml exists locally, gitignored, untracked. ✓
+- DISPATCH C (`989e2c8`): HARDWARE_VERIFICATION.md checklist created (6 UNVERIFIED flags inside; notably: no in-app numeric-dBm surface for calibration, laptop consent approval is curl-only).
+- Consent-flow gap found during integration (`262cc83`): app never created consent requests so Preview could never reach ready — wired request→await→check→ready/denied (`requestScreenConsent`, `checkScreen(consentId:)`, new `consentRequired/consentDenied` states) + 5 tests. 114 pytest + 50 dart pass, analyze clean.
+- Remaining v0.1.0: JDK 17 for apk build, device run, hardware loop per HARDWARE_VERIFICATION.md (voice demo, phone-on-LAN, BLE calibration, TLS rejection, consent check), tag v0.1.0.
 
 ## Session notes (2026-09-19)
 
