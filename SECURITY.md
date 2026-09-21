@@ -59,7 +59,7 @@ Explicit, un-skippable prompts before:
 ## Secrets & data handling
 
 - **No secrets in source control.** `config/security.yaml` (tokens, cert paths) is gitignored; ship a `security.yaml.example` instead.
-- **Inference, agents, data, and telemetry stay local.** No telemetry, no analytics calls, no crash reporting that phones home by default — if you ever add any, it must be opt-in and disclosed in `README.md`. Optional FCM background push is the one exception — see Known limitations.
+- **Inference, agents, data, and telemetry stay local.** No telemetry, no analytics calls, no crash reporting that phones home by default — if you ever add any, it must be opt-in and disclosed in `README.md`. FCM background push is not implemented in v0.1.0; if ever added it would be the one exception — see Known limitations.
 - **Screen/webcam frames are not persisted** beyond what's needed to stream them live — don't accidentally build a rolling video archive of your own screen.
 - **Event logs (`logs/events.jsonl`)** should log what the agent did, not raw sensitive payloads — avoid dumping full file contents or screen frames into the log.
 
@@ -80,8 +80,8 @@ Explicit, un-skippable prompts before:
 - `pyautogui`-based automation is "blind" — it doesn't verify the on-screen effect of an action before moving on. This is a functional risk more than a security one, but it means a misfired action can go further than intended before anything notices.
 - MJPEG streaming, even authenticated, shows *everything* on screen — there's no selective redaction of, say, a password manager window. Treat "near mode" as "this person can see everything on my screen," not as a scoped permission.
 - This threat model assumes a reasonably trusted home/personal network. It is not hardened for hostile or shared networks (student housing Wi-Fi, cafés) — don't run it there without the VPN/tunnel approach above.
-- v0.1.0 with in-app SSE + FCM background push is local-first-when-the-app-is-open, not zero-cloud-dependency — background push routes through Google's FCM infrastructure.
-- Bluetooth RSSI proximity is a UX convenience only (fewer taps when near), not a security boundary — it is trivially spoofable. LAN + token auth remain the actual access control.
+- v0.1.0 notifications are in-app SSE SnackBars only — no FCM/background push is implemented, so v0.1.0 is local-first-when-the-app-is-open with zero cloud dependency. If FCM background push is ever added, that configuration becomes local-first-when-open only, not zero-cloud-dependency, because background push routes through Google's FCM infrastructure.
+- Bluetooth RSSI proximity is a UX convenience only (fewer taps when near), not a security boundary — it is trivially spoofable. The phone fetches `rssi_near_threshold` via authenticated `GET /proximity` (readable in FAR mode on purpose; mode + threshold only, never the token), applies it locally to its BLE readings (stale→null, fail-closed), and sends self-attested `X-RSSI` whose ONLY server-side use is the near/far gate in `require_near` (fail-closed to far; never branches auth identity, lockout, throttling, or consent). LAN + token auth remain the actual access control.
 
 ## Incident response (the short version)
 

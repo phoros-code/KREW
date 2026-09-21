@@ -48,12 +48,13 @@ agent_limits:
 ```yaml
 auth:
   token: ""                     # generated on first run, never committed
-  token_rotation_days: 30
+  token_rotation_days: 30       # reserved, NOT enforced — the hard ceiling is token_absolute_max_age_days
   token_absolute_max_age_days: 30  # hard ceiling from issuance, regardless of activity; forces re-pairing
+  # issued_at: ""               # runtime-managed (ISO-8601 UTC, written on first run + rotate); missing/naive = expired
   max_failed_attempts: 5
   lockout_minutes: 15
   idle_timeout_minutes: 60
-tls:
+tls:                            # consumed by scripts/serve.ps1 + gen_cert (paths), not by server/ loaders
   cert_path: "certs/dev-cert.pem"
   key_path: "certs/dev-key.pem"
 proximity:
@@ -62,7 +63,7 @@ proximity:
   fail_mode: "far"                # what to default to if the signal can't be read — never "near"
 network:
   bind_host: "0.0.0.0"           # bound to LAN interface only; do not port-forward
-  bind_port: 8443
+  bind_port: 8443                # NOTE: scripts/serve.ps1 currently hardcodes host/port — edit there, not just here
   rate_limit_per_minute: 60  # enforced per client IP by middleware in server/main.py (429 rate_limited)
 ```
 

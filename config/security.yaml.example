@@ -1,7 +1,9 @@
 auth:
   token: ""                     # generated on first run, never committed
-  token_rotation_days: 30
+  token_rotation_days: 30       # reserved, NOT enforced — the hard ceiling is token_absolute_max_age_days below
   token_absolute_max_age_days: 30  # hard ceiling from issuance, regardless of activity; forces re-pairing
+  # issued_at: ""               # runtime-managed (ISO-8601 UTC, written on first run + rotate) — do not hand-edit;
+                                # a missing or timezone-naive value verifies as already-expired (fail closed)
   max_failed_attempts: 5
   lockout_minutes: 15
   idle_timeout_minutes: 60
