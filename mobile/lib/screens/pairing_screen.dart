@@ -272,13 +272,13 @@ class _PairingScreenState extends State<PairingScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
-                          const Text(
+                          Text(
                             'Pairing failed',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                              color: BuddyColors.error,
-                            ),
+                            style: Theme.of(context).textTheme.labelLarge
+                                ?.copyWith(
+                                  color: BuddyColors.error,
+                                  fontWeight: FontWeight.w700,
+                                ),
                           ),
                           const SizedBox(height: BuddySpacing.s1),
                           Text(_errorMessage!, style: small),

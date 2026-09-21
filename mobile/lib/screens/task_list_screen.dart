@@ -60,20 +60,19 @@ class TaskListScreen extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Row(
+                  Row(
                     children: <Widget>[
-                      Icon(
+                      const Icon(
                         Icons.error_outline,
                         size: 18,
                         color: BuddyColors.error,
                       ),
-                      SizedBox(width: BuddySpacing.s2),
+                      const SizedBox(width: BuddySpacing.s2),
                       Text(
                         'Task updates paused',
-                        style: TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w700,
+                        style: Theme.of(context).textTheme.labelLarge?.copyWith(
                           color: BuddyColors.error,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
                     ],
