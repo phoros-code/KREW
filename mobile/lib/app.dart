@@ -38,6 +38,7 @@ class _BuddyAppState extends State<BuddyApp> {
 
   BuddyApi? _api;
   String? _savedHost;
+  String? _certFingerprint;
   String? _btDeviceId;
   bool _booting = true;
   int _tab = 0;
@@ -68,10 +69,12 @@ class _BuddyAppState extends State<BuddyApp> {
     if (!mounted) return;
     _btDeviceId = await _store.readBtDeviceId();
     if (!mounted) return;
+    _certFingerprint = await _store.readCertFingerprint();
+    if (!mounted) return;
     setState(() {
       _booting = false;
       if (saved != null) {
-        _attachApi(saved.host, saved.token, initialTab: 1);
+        _attachApi(saved.host, saved.token, _certFingerprint, initialTab: 1);
       }
     });
     if (saved != null) {
@@ -80,17 +83,18 @@ class _BuddyAppState extends State<BuddyApp> {
     }
   }
 
-  void _attachApi(String host, String token, {int? initialTab}) {
+  void _attachApi(String host, String token, String? certFingerprint, {int? initialTab}) {
     _api?.close();
-    _api = BuddyApi(host: host, token: token);
+    _api = BuddyApi(host: host, token: token, certFingerprint: certFingerprint);
     _savedHost = host;
+    _certFingerprint = certFingerprint;
     _proximity.setUnknown();
     if (initialTab != null) _tab = initialTab;
   }
 
-  void _onPaired(String host, String token) {
+  void _onPaired(String host, String token, String certFingerprint) {
     setState(() {
-      _attachApi(host, token);
+      _attachApi(host, token, certFingerprint);
       _tab = 1;
       _events.clear();
       _tasks.clear();
@@ -158,6 +162,7 @@ class _BuddyAppState extends State<BuddyApp> {
     if (!mounted) return;
     setState(() {
       _savedHost = null;
+      _certFingerprint = null;
       _btDeviceId = null;
       _tab = 0;
       _events.clear();
@@ -315,6 +320,7 @@ class _BuddyAppState extends State<BuddyApp> {
                     store: _store,
                     initialHost: _savedHost,
                     initialBtDeviceId: _btDeviceId,
+                    initialCertFingerprint: _certFingerprint,
                     onPaired: _onPaired,
                   ),
                   ChatScreen(

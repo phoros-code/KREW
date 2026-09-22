@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:everyday_buddy/services/buddy_api.dart';
 import 'package:everyday_buddy/services/proximity_service.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -175,6 +177,101 @@ void main() {
       expect(
         api.fetchProximityConfig(),
         throwsA(isA<BuddyApiException>().having((e) => e.code, 'code', 'bad_response')),
+      );
+      api.close();
+    });
+  });
+
+  group('BuddyApi certificate pinning', () {
+    test('normalizeFingerprint strips separators and case', () {
+      expect(BuddyApi.normalizeFingerprint('6C:9C:AE AC'), '6c9caeac');
+      expect(
+        BuddyApi.normalizeFingerprint('  6c9caeacacc945e89aBAB  '),
+        '6c9caeacacc945e89abab',
+      );
+    });
+
+    test('isValidFingerprint accepts 64 hex in any pasted format', () {
+      const bare =
+          '6c9caeacacc945e89ababdaeb5c0e2d2c6a052b97965535fdd73ec6435982fbc';
+      expect(BuddyApi.isValidFingerprint(bare), isTrue);
+      expect(
+        BuddyApi.isValidFingerprint(
+          '6C:9C:AE:AC:AC:C9:45:E8:9A:BA:BD:AE:B5:C0:E2:D2:C6:A0:52:B9:79:65:53:5F:DD:73:EC:64:35:98:2F:BC',
+        ),
+        isTrue,
+      );
+    });
+
+    test('isValidFingerprint rejects short, empty, and non-hex', () {
+      expect(BuddyApi.isValidFingerprint(''), isFalse);
+      expect(BuddyApi.isValidFingerprint('abc123'), isFalse);
+      expect(BuddyApi.isValidFingerprint('z' * 64), isFalse);
+      expect(BuddyApi.isValidFingerprint('00' * 31 + '0'), isFalse);
+    });
+
+    test('fingerprintMatchesDer verifies SHA-256 (empty-input vector)', () {
+      // SHA-256("") = e3b0c4…855 — a fixed public test vector, no cert needed.
+      const emptySha256 =
+          'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+      expect(BuddyApi.fingerprintMatchesDer(<int>[], emptySha256), isTrue);
+      expect(
+        BuddyApi.fingerprintMatchesDer(
+          <int>[],
+          emptySha256.toUpperCase().replaceAllMapped(
+            RegExp(r'..'),
+            (m) => '${m[0]}:',
+          ),
+        ),
+        isTrue,
+      );
+      expect(BuddyApi.fingerprintMatchesDer(<int>[0], emptySha256), isFalse);
+      expect(BuddyApi.fingerprintMatchesDer(<int>[], '00' * 32), isFalse);
+    });
+  });
+
+  group('BuddyApi transport error mapping (no silent failures)', () {
+    BuddyApi apiThrowing(Object err) => BuddyApi(
+      host: '192.168.1.10',
+      token: 't',
+      client: MockClient((_) async => throw err),
+    );
+
+    test('HandshakeException becomes the cert-specific unreachable', () {
+      final api = apiThrowing(const HandshakeException('handshake failure'));
+      expect(
+        api.checkHealth(),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'unreachable')
+              .having((e) => e.message, 'message', contains('fingerprint')),
+        ),
+      );
+      api.close();
+    });
+
+    test('TlsException becomes the cert-specific unreachable', () {
+      final api = apiThrowing(const TlsException('bad cert'));
+      expect(
+        api.checkHealth(),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'unreachable')
+              .having((e) => e.message, 'message', contains('fingerprint')),
+        ),
+      );
+      api.close();
+    });
+
+    test('SocketException becomes the route unreachable', () {
+      final api = apiThrowing(const SocketException('refused'));
+      expect(
+        api.checkHealth(),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'unreachable')
+              .having((e) => e.message, 'message', contains('Wi-Fi')),
+        ),
       );
       api.close();
     });

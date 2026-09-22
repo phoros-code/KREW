@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show HttpClient, HttpException, HandshakeException, SocketException, TlsException, X509Certificate;
 
+import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
 
 import '../models/buddy_event.dart';
 
@@ -132,14 +135,23 @@ enum ScreenStatus {
 /// https://<host>:8443 (see CONFIG.md bind_port, SECURITY.md TLS everywhere).
 /// Default port is 8443; the pairing screen accepts a bare IP/hostname and an
 /// optional ":port" override.
+///
+/// TLS trust is by SHA-256 pin, never by system CA: the server uses a
+/// self-signed dev cert, so the default client would reject every handshake
+/// (and the resulting HandshakeException used to escape uncaught — the
+/// spinner-stops-with-no-error pairing bug). The pin is the `Cert SHA256`
+/// line from `scripts/pair_device.py`, saved with the pairing and compared
+/// against the live cert on every handshake. Anything else is rejected.
 class BuddyApi {
   BuddyApi({
     required String host,
     required String token,
     http.Client? client,
+    String? certFingerprint,
     Duration timeout = const Duration(seconds: 10),
-  }) : _client = client ?? http.Client(),
-       _timeout = timeout {
+  }) : _client = client ?? BuddyApi.newPinnedClient(certFingerprint),
+       _timeout = timeout,
+       certFingerprint = certFingerprint {
     final parsed = BuddyApi.splitHostPort(host);
     _hostname = parsed.host;
     _port = parsed.port;
@@ -148,9 +160,57 @@ class BuddyApi {
 
   final http.Client _client;
   final Duration _timeout;
+
+  /// Normalized SHA-256 pin this instance trusts (null when a mock client
+  /// was injected for unit tests — mocks never touch TLS).
+  final String? certFingerprint;
   late final String _hostname;
   late final int _port;
   late final String _token;
+
+  /// Strip separators/case so `6C:9C:AE…`, `6c9cae…`, and pasted variants
+  /// with spaces all compare equal. Pure — unit tested.
+  static String normalizeFingerprint(String input) =>
+      input.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
+
+  /// A pin is usable only if it normalizes to exactly 32 bytes of hex.
+  static bool isValidFingerprint(String input) {
+    final String n = normalizeFingerprint(input);
+    return n.length == 64 && RegExp(r'^[0-9a-f]{64}$').hasMatch(n);
+  }
+
+  /// True when the DER bytes of the presented cert hash to the pinned value.
+  /// Pure — unit tested with a known SHA-256 vector.
+  static bool fingerprintMatchesDer(List<int> der, String pinnedFingerprint) =>
+      sha256.convert(der).toString() == normalizeFingerprint(pinnedFingerprint);
+
+  /// TLS client that trusts exactly one cert: the pinned fingerprint.
+  /// Empty/missing pin trusts nothing (fail closed) — pairing always supplies
+  /// one, so an unpinned client can only exist by programmer error.
+  static IOClient newPinnedClient(String? fingerprint) {
+    final String pinned = normalizeFingerprint(fingerprint ?? '');
+    final HttpClient io = HttpClient();
+    io.badCertificateCallback =
+        (X509Certificate cert, String host, int port) {
+      if (pinned.isEmpty) return false;
+      return fingerprintMatchesDer(cert.der, pinned);
+    };
+    return IOClient(io);
+  }
+
+  /// No route to the laptop (DNS, refused, reset, timeout, proxy HTML).
+  static const BuddyApiException routeError = BuddyApiException(
+    code: 'unreachable',
+    message: 'No route to the laptop — check the IP and Wi-Fi.',
+  );
+
+  /// Handshake reached the laptop but TLS was rejected — almost always a
+  /// fingerprint mismatch (re-pair from `pair_device.py` output), not a
+  /// network problem. Kept distinct from [routeError] on purpose.
+  static const BuddyApiException tlsError = BuddyApiException(
+    code: 'unreachable',
+    message: 'The laptop rejected the secure connection — re-check the cert fingerprint and try again.',
+  );
 
   String get displayHost => _port == 8443 ? _hostname : '$_hostname:$_port';
 
@@ -192,15 +252,17 @@ class BuddyApi {
         throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
       }
     } on TimeoutException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
     } on http.ClientException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
     }
   }
 
@@ -217,15 +279,17 @@ class BuddyApi {
           .get(_uri('/proximity'), headers: _authHeaders)
           .timeout(_timeout);
     } on TimeoutException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
     } on http.ClientException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
     }
     if (resp.statusCode != 200) {
       throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
@@ -267,15 +331,17 @@ class BuddyApi {
           .post(_uri('/command'), headers: headers, body: jsonEncode(<String, String>{'text': text}))
           .timeout(_timeout);
     } on TimeoutException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
     } on http.ClientException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
     }
     if (resp.statusCode != 200) {
       throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
@@ -310,15 +376,17 @@ class BuddyApi {
     try {
       response = await _client.send(request).timeout(_timeout);
     } on TimeoutException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
     } on http.ClientException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
     }
 
     if (response.statusCode != 200) {
@@ -360,7 +428,9 @@ class BuddyApi {
   /// no junk tasks are queued).
   Future<void> validatePairing() async {
     await checkHealth();
-    final http.Client probe = http.Client();
+    // Pinned like the main client: an unpinned probe would reject the
+    // self-signed dev cert and fail pairing even when everything is correct.
+    final http.Client probe = BuddyApi.newPinnedClient(certFingerprint);
     try {
       final http.Request request = http.Request('GET', _uri('/events'));
       request.headers.addAll(_authHeaders);
@@ -381,15 +451,17 @@ class BuddyApi {
     } on BuddyApiException {
       rethrow;
     } on TimeoutException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
     } on http.ClientException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
     } finally {
       probe.close();
     }
@@ -407,15 +479,17 @@ class BuddyApi {
           .post(_uri('/screen/consent'), headers: _authHeaders)
           .timeout(_timeout);
     } on TimeoutException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
     } on http.ClientException {
-      throw const BuddyApiException(
-        code: 'unreachable',
-        message: 'No route to the laptop — check the IP and Wi-Fi.',
-      );
+      throw routeError;
     }
     if (resp.statusCode != 200) {
       throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
@@ -483,6 +557,14 @@ class BuddyApi {
           return ScreenStatus.unreachable;
       }
     } on TimeoutException {
+      return ScreenStatus.unreachable;
+    } on SocketException {
+      return ScreenStatus.unreachable;
+    } on HttpException {
+      return ScreenStatus.unreachable;
+    } on HandshakeException {
+      return ScreenStatus.unreachable;
+    } on TlsException {
       return ScreenStatus.unreachable;
     } on http.ClientException {
       return ScreenStatus.unreachable;

@@ -20,14 +20,18 @@ class PairingScreen extends StatefulWidget {
     required this.onPaired,
     this.initialHost,
     this.initialBtDeviceId,
+    this.initialCertFingerprint,
   });
 
   final SecureStore store;
-  final void Function(String host, String token) onPaired;
+  final void Function(String host, String token, String certFingerprint) onPaired;
   final String? initialHost;
 
   /// Previously saved laptop Bluetooth id, if any (prefill only).
   final String? initialBtDeviceId;
+
+  /// Previously saved cert fingerprint, if any (prefill only).
+  final String? initialCertFingerprint;
 
   @override
   State<PairingScreen> createState() => _PairingScreenState();
@@ -38,6 +42,7 @@ class _PairingScreenState extends State<PairingScreen> {
   late final TextEditingController _hostController;
   late final TextEditingController _tokenController;
   late final TextEditingController _btController;
+  late final TextEditingController _fpController;
   bool _testing = false;
   bool _obscured = true;
   String? _errorMessage;
@@ -49,6 +54,7 @@ class _PairingScreenState extends State<PairingScreen> {
     _hostController = TextEditingController(text: widget.initialHost ?? '');
     _tokenController = TextEditingController();
     _btController = TextEditingController(text: widget.initialBtDeviceId ?? '');
+    _fpController = TextEditingController(text: widget.initialCertFingerprint ?? '');
   }
 
   @override
@@ -56,6 +62,7 @@ class _PairingScreenState extends State<PairingScreen> {
     _hostController.dispose();
     _tokenController.dispose();
     _btController.dispose();
+    _fpController.dispose();
     super.dispose();
   }
 
@@ -76,23 +83,35 @@ class _PairingScreenState extends State<PairingScreen> {
     return null;
   }
 
+  String? _validateFingerprint(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Paste the cert fingerprint from the laptop pairing script.';
+    }
+    if (!BuddyApi.isValidFingerprint(value)) {
+      return 'That does not look like a SHA-256 fingerprint (64 hex chars).';
+    }
+    return null;
+  }
+
   Future<void> _testAndSave() async {
     if (!_formKey.currentState!.validate()) return;
     final String host = _hostController.text.trim();
     final String token = _tokenController.text.trim();
+    final String fingerprint = _fpController.text.trim();
     setState(() {
       _testing = true;
       _errorMessage = null;
       _errorCode = null;
     });
-    final BuddyApi probe = BuddyApi(host: host, token: token);
+    final BuddyApi probe = BuddyApi(host: host, token: token, certFingerprint: fingerprint);
     try {
       await probe.validatePairing();
       await widget.store.savePairing(host: host, token: token);
+      await widget.store.saveCertFingerprint(fingerprint);
       // Optional: blank clears the saved id and disables the BLE watch.
       await widget.store.saveBtDeviceId(_btController.text);
       if (!mounted) return;
-      widget.onPaired(host, token);
+      widget.onPaired(host, token, fingerprint);
     } on BuddyApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -220,6 +239,32 @@ class _PairingScreenState extends State<PairingScreen> {
             const SizedBox(height: BuddySpacing.s2),
             Text(
               'Saved in secure storage (Keystore / Keychain), never in plain files. Port defaults to 8443 over HTTPS.',
+              style: small,
+            ),
+            const SizedBox(height: BuddySpacing.s4),
+            Text(
+              'Laptop cert fingerprint (SHA-256)',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+            const SizedBox(height: BuddySpacing.s2),
+            TextFormField(
+              controller: _fpController,
+              validator: _validateFingerprint,
+              autocorrect: false,
+              enableSuggestions: false,
+              keyboardType: TextInputType.text,
+              decoration: const InputDecoration(
+                hintText: '6c9caeac… (Cert SHA256 from pair_device.py)',
+                prefixIcon: Icon(Icons.verified_outlined, size: 18),
+              ),
+              style: BuddyTheme.mono(
+                dark ? BuddyColors.inkOnDark : BuddyColors.inkOnLight,
+                size: 13.5,
+              ),
+            ),
+            const SizedBox(height: BuddySpacing.s2),
+            Text(
+              'The app trusts exactly this certificate and nothing else. Copy it from the laptop pairing script output — colons and spaces are fine.',
               style: small,
             ),
             const SizedBox(height: BuddySpacing.s4),

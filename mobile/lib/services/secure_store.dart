@@ -17,6 +17,11 @@ class SecureStore {
   static const String hostKey = 'buddy_host';
   static const String tokenKey = 'buddy_token';
 
+  /// Pinned SHA-256 of the laptop's TLS cert (the `Cert SHA256` line from
+  /// `scripts/pair_device.py`). The app trusts exactly this cert and nothing
+  /// else — absent/blank means the TLS client trusts nothing (fail closed).
+  static const String certFpKey = 'buddy_cert_fp';
+
   /// Optional laptop Bluetooth id for the Phase 4.1 RSSI watch
   /// (Android: MAC, iOS: UUID). Absent/blank = BLE watch stays off and
   /// proximity falls back to server-403 behavior (fail closed, FAR).
@@ -41,6 +46,21 @@ class SecureStore {
     await _storage.write(key: tokenKey, value: token.trim());
   }
 
+  Future<String?> readCertFingerprint() async {
+    final String? fp = await _storage.read(key: certFpKey);
+    if (fp == null || fp.trim().isEmpty) return null;
+    return fp.trim();
+  }
+
+  Future<void> saveCertFingerprint(String? fingerprint) async {
+    final String trimmed = (fingerprint ?? '').trim();
+    if (trimmed.isEmpty) {
+      await _storage.delete(key: certFpKey);
+    } else {
+      await _storage.write(key: certFpKey, value: trimmed);
+    }
+  }
+
   Future<String?> readBtDeviceId() async {
     final String? id = await _storage.read(key: btDeviceKey);
     if (id == null || id.trim().isEmpty) return null;
@@ -59,6 +79,7 @@ class SecureStore {
   Future<void> clear() async {
     await _storage.delete(key: hostKey);
     await _storage.delete(key: tokenKey);
+    await _storage.delete(key: certFpKey);
     await _storage.delete(key: btDeviceKey);
   }
 }

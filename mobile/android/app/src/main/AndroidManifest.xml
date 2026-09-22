@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- LAN HTTPS to the laptop control server. Debug builds get this
+         injected by the Flutter tool; release builds need it declared. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- Phase 4.1 BLE proximity watch (flutter_blue_plus). Scan/connect are
          location-free on API 31+; pre-31 falls back to location permission. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"

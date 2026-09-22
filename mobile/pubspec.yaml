@@ -10,6 +10,7 @@ dependencies:
   flutter:
     sdk: flutter
   http: ^1.2.0
+  crypto: ^3.0.3 # SHA-256 cert pinning in BuddyApi (SECURITY.md TLS)
   flutter_secure_storage: ^9.0.0
   google_fonts: ^6.1.0
   flutter_blue_plus: ^2.3.12
