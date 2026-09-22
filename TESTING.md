@@ -24,7 +24,30 @@ Don't try to force these into pytest — verify them by hand, but track that you
 - `voice/wake.py` — real wake-word detection with your actual mic, in your actual room
 - The full voice loop end to end, out loud
 - Bluetooth RSSI thresholds — these need calibration against your specific phone and laptop hardware, not a fixed number
-- MJPEG screen/webcam streaming — verify visually, and verify the consent prompt actually blocks the stream until accepted
+- MJPEG screen/webcam streaming — verify visually, and verify the consent gate
+  blocks the stream until explicitly approved (v0.1.0: `curl`/PowerShell approval
+  from the laptop — the security property is the explicit human approval, not the
+  GUI shape; OS-level prompt is v1.1). Exact hardware-verification sequence
+  (replace `<ip>` / `<token>` / `<consent_id>`; PowerShell quoting):
+  1. Request: `$h = @{"Authorization"="Bearer <token>"}` then
+     `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent" -Method Post -Headers $h -SkipCertificateCheck`
+     PASS: `{"consent_id": "<hex>", "status": "pending"}` — the request is now
+     PENDING, nothing streams yet.
+  2. Before-approval gate (must be empty):
+     `Invoke-RestMethod -Uri "https://<ip>:8443/screen?consent_id=<consent_id>" -Headers $h -SkipCertificateCheck`
+     PASS: HTTP 403 `{"error": {"code": "consent_required", ...}}` — ZERO `/screen`
+     bytes flow before approval. Any image bytes here = FAIL (fail-closed broken).
+  3. Approve (the human trust decision — state flips PENDING → APPROVED):
+     `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent/<consent_id>/approve" -Method Post -Headers $h -SkipCertificateCheck`
+     PASS: `{"consent_id": "<same>", "status": "approved"}`, and re-running the
+     step-2 `GET /screen?consent_id=…` now returns 200 `multipart/x-mixed-replace`
+     MJPEG bytes. Approved grants expire after 15 min (`GRANT_TTL_SECONDS = 900`
+     in `server/streams.py`); live streams re-check every frame, so a stream that
+     stops at ~15 min is correct — re-request consent.
+  4. Deny path (fresh request → new id): `.../screen/consent/<id2>/deny`
+     PASS: `{"status": "denied"}` (PENDING → DENIED) and
+     `GET /screen?consent_id=<id2>` → 403 `{"code": "consent_denied", ...}` —
+     the phone must never show imagery for a denied id.
 - TLS setup — verify the phone app actually rejects an untrusted cert, don't just assume `mkcert` wired correctly
 
 ## UI testing
