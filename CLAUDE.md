@@ -82,6 +82,18 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Live TLS server check: /health ok, /proximity 401→200, /command queued AND completed via real model (web_search→fetch→summary in events.jsonl), consent create→approve→200, /screen without grant 403, MJPEG stream 772KB/6s with JPEG SOI. Test server stopped afterwards (port 8443 free).
 - NOT tagging v0.1.0 yet: human-only steps remain per HARDWARE_VERIFICATION.md (live-mic demo, phone-on-LAN, BLE calibration, TLS rejection on phone, in-app consent check). Voice models cached (`~/.cache`, `voice/models/`) so the human loop needs no big downloads.
 
+## Session notes (2026-09-22, review dispatches)
+
+- BLE both-platforms: `BleProximityReader` matching is format-agnostic (trim + lowercase compare) but tests only covered MAC — added 3 UUID tests (case-insensitive match, whitespace-trimmed id, wrong-UUID stays FAR). HARDWARE_VERIFICATION §3.7 added: full walk on first phone, then NEAR→FAR→NEAR confirmation-only pass on second phone (same threshold, proves the other ID-format path). 53 dart pass, analyze clean.
+- Consent stopgap specified: TESTING.md hardware section now pins the exact `Invoke-RestMethod` request→403→approve→200→deny→403 sequence with state transitions (PENDING→APPROVED/DENIED) and 15-min TTL note, so curl-approve is unambiguous for v0.1.0.
+- Voice-vs-text routing (was error-fallback only): new `voice_model` in `config/models.yaml` + `ModelsConfig` + CONFIG.md; `orchestrator.run(..., source="voice"|"text")` — voice prefers fast model (latency), text prefers target (quality), with fallthrough; `voice_loop` passes `source="voice"`, `/command` passes `"text"` explicitly, `task_started` logs `source`. 4 new pytest (voice-fast, text-quality, voice-fallthrough, voice-passes-source). 118 passed + 1 skip.
+
+## Session notes (2026-09-22, pairing-fix dispatch)
+
+- Bug: Android pairing showed spinner-stop-with-no-error. Root cause, two parts: (1) `BuddyApi` used a plain `http.Client()` with zero cert logic, so the self-signed dev cert raised `HandshakeException` on first contact; (2) every `BuddyApi` method caught only `TimeoutException`/`http.ClientException`, so it escaped past `on BuddyApiException` uncaught — `finally` reset `_testing` (spinner stops) and nothing rendered. Phone-browser §2 passing while app failed isolated it to the app TLS layer.
+- Fix: SHA-256 pinning per PROJECT_SPEC (`newPinnedClient` via `HttpClient.badCertificateCallback`, trusts exactly the `pair_device.py` fingerprint, empty pin trusts nothing) + new required fingerprint field on Pair screen (validated 64-hex, stored in `SecureStore` as `buddy_cert_fp`) + `Socket/Http/Handshake/TlsException` mapped to `unreachable` (cert-specific message for handshake/TLS) in all 7 methods incl. `validatePairing` probe (was a second unpinned client) + `INTERNET` permission in base manifest (debug was tool-injected; release would have had no network). 7 new dart tests (pin normalize/valid/match-vector + 3 error-mapping). 60 dart pass, analyze clean, 118 pytest + 1 skip.
+- Fresh debug APK built: `mobile/build/app/outputs/flutter-apk/app-debug.apk` (177.2MB). User to reinstall + re-pair with IP + token + fingerprint, then §3 walk test.
+
 ## Session notes (2026-09-19)
 
 - Done: full Phase 0 per PROMPTS.md. License picked: MIT (`LICENSE` added).
