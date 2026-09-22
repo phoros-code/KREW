@@ -96,6 +96,17 @@ Goal: pick `rssi_near_threshold` (dBm) for YOUR hardware. Repo default is `-60`;
   PASS: `GET /proximity` (authenticated) returns your value, e.g. `{"mode": "lan_plus_bluetooth", "rssi_near_threshold": -65}`.
 - [ ] 3.6 Re-verify: repeat the 3.3 walk test.
   PASS: boundary now sits where you want it (desk = NEAR, hallway/other room = FAR), no flapping between the two at a fixed spot. If it flaps, move the threshold 3 dB weaker and repeat.
+- [ ] 3.7 Second-device confirmation (both platforms must be exercised — Android
+  MAC matching and iOS UUID matching are different ID formats through the same
+  `BleProximityReader` gate, and a format bug on one won't surface on the other).
+  Full calibration (§3.3–§3.6) on whichever phone is more convenient first; then
+  on the second phone: pair it (same LAN IP + token, its own BT id — MAC on
+  Android, UUID on iOS), stand next to the laptop (~0.5 m) and confirm the header
+  pill reads NEAR, walk ~8–10 m / another room, wait ~20 s (stale window is
+  15 s), and confirm it flips to FAR, then walk back and confirm NEAR again.
+  PASS: NEAR→FAR→NEAR transition fires at all on the second device. No separate
+  threshold needed — same server `rssi_near_threshold` applies to both; this step
+  proves the second ID-format path works, not that it shares the same boundary.
 
 ---
 
