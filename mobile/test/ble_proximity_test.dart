@@ -116,5 +116,51 @@ void main() {
       await reader.dispose();
       await ble.sightings.close();
     });
+
+    test('iOS UUID path matches case-insensitively (same gate as MAC)', () async {
+      // iOS reports the laptop as a UUID, not a MAC — the matcher must treat
+      // it identically: trim + lowercase compare, emit RSSI on sighting.
+      const uuid = 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890';
+      final ble = FakeBle();
+      final reader = readerOf(ble);
+      final List<int?> seen = <int?>[];
+      final sub = reader.rssi.listen(seen.add);
+      await reader.start(uuid);
+      ble.sightings.add([sight('11:22:33:44:55:66', -90), sight(uuid.toLowerCase(), -62)]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(seen, contains(-62));
+      await sub.cancel();
+      await reader.dispose();
+      await ble.sightings.close();
+    });
+
+    test('UUID with surrounding whitespace still matches (trimmed)', () async {
+      const uuid = 'A1B2C3D4-E5F6-7890-ABCD-EF1234567890';
+      final ble = FakeBle();
+      final reader = readerOf(ble);
+      final List<int?> seen = <int?>[];
+      final sub = reader.rssi.listen(seen.add);
+      await reader.start('  $uuid  ');
+      ble.sightings.add([sight(uuid, -70)]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(seen, contains(-70));
+      await sub.cancel();
+      await reader.dispose();
+      await ble.sightings.close();
+    });
+
+    test('UUID mismatch stays FAR (wrong device ignored)', () async {
+      final ble = FakeBle();
+      final reader = readerOf(ble);
+      final List<int?> seen = <int?>[];
+      final sub = reader.rssi.listen(seen.add);
+      await reader.start('A1B2C3D4-E5F6-7890-ABCD-EF1234567890');
+      ble.sightings.add([sight('FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF', -50)]);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(seen, isEmpty);
+      await sub.cancel();
+      await reader.dispose();
+      await ble.sightings.close();
+    });
   });
 }
