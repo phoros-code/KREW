@@ -67,7 +67,9 @@ def handle_utterance(wav_path: str | Path, config: LoopConfig | None = None) -> 
         tts.speak(FALLBACK_EMPTY, cfg.reply_wav)
         return FALLBACK_EMPTY
     try:
-        result = orchestrator.run(heard.text)
+        # Latency-first: voice UX reads a multi-second gap as broken, so the
+        # orchestrator prefers voice_model (qwen2.5:3b) for this path.
+        result = orchestrator.run(heard.text, source="voice")
     except Exception:
         tts.speak(FALLBACK_FAILED, cfg.reply_wav)
         return FALLBACK_FAILED

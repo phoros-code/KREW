@@ -19,10 +19,11 @@ def _stub(monkeypatch, heard_text="what is the weather", confidence=0.9, orch_ou
     monkeypatch.setattr(
         "voice.tts.speak", lambda text, out, model_path=None: spoken.append(text) or Path(out)
     )
-    monkeypatch.setattr(
-        "buddy_core.orchestrator.run",
-        lambda cmd: orchestrator.TaskResult(ok=orch_ok, output=orch_output, task_id="t"),
-    )
+    seen: dict = {}
+    def _fake_run(cmd, task_id=None, source="text"):
+        seen["source"] = source
+        return orchestrator.TaskResult(ok=orch_ok, output=orch_output, task_id="t")
+    monkeypatch.setattr("buddy_core.orchestrator.run", _fake_run)
     return spoken
 
 
@@ -31,6 +32,29 @@ def test_happy_path_speaks_answer(monkeypatch, tmp_path) -> None:
     reply = voice_loop.handle_utterance(tmp_path / "u.wav", voice_loop.LoopConfig(reply_wav=str(tmp_path / "r.wav")))
     assert reply == "Sunny."
     assert spoken == ["Sunny."]
+
+
+def test_voice_path_routes_latency_first(monkeypatch, tmp_path) -> None:
+    from buddy_core import orchestrator as orch_mod
+
+    captured: dict = {}
+
+    def _capture(cmd, task_id=None, source="text"):
+        captured["source"] = source
+        return orch_mod.TaskResult(ok=True, output="Hi.", task_id="t")
+
+    from voice import stt as stt_mod
+    from voice.stt import Transcription
+
+    monkeypatch.setattr(
+        "voice.stt.transcribe", lambda path, model_name="base": Transcription("hello", 0.9)
+    )
+    monkeypatch.setattr(
+        "voice.tts.speak", lambda text, out, model_path=None: Path(out)
+    )
+    monkeypatch.setattr("buddy_core.orchestrator.run", _capture)
+    voice_loop.handle_utterance(tmp_path / "u.wav", voice_loop.LoopConfig(reply_wav=str(tmp_path / "r.wav")))
+    assert captured.get("source") == "voice"
 
 
 def test_empty_transcription_fallback(monkeypatch, tmp_path) -> None:

@@ -338,7 +338,9 @@ def create_app(
         if not text:
             raise _http_error(400, {"error": {"code": "bad_request", "message": "Missing 'text'"}})
         task_id = uuid.uuid4().hex[:12]
-        background.add_task(orchestrator.run, text, task_id)
+        # Quality-first: text/API callers prefer target_model (llama3.1:8b).
+        # Voice-loop latency routing lives in voice/voice_loop.py (source="voice").
+        background.add_task(orchestrator.run, text, task_id, "text")
         return {"task_id": task_id, "status": "queued"}
 
     @app.get("/events")

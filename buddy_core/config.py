@@ -35,6 +35,9 @@ class ModelsConfig:
     dev_model: str = "qwen2.5:3b"
     target_model: str = "llama3.1:8b"
     fallback_model: str = "qwen2.5:3b"
+    # Fast model for the voice loop (latency-sensitive). Text/API requests
+    # default to target_model (quality); voice requests default here.
+    voice_model: str = "qwen2.5:3b"
 
 
 @dataclass
@@ -78,6 +81,7 @@ def load_models_config(path: str | Path | None = None) -> ModelsConfig:
         dev_model=ollama.get("dev_model", ModelsConfig.dev_model),
         target_model=ollama.get("target_model", ModelsConfig.target_model),
         fallback_model=ollama.get("fallback_model", ModelsConfig.fallback_model),
+        voice_model=ollama.get("voice_model", ModelsConfig.voice_model),
     )
 
 

@@ -8,9 +8,16 @@ Nothing security- or behavior-relevant should be hardcoded in Python or Dart —
 ollama:
   host: "http://localhost:11434"
   dev_model: "qwen2.5:3b"      # fast iteration during development
-  target_model: "llama3.1:8b"  # default for normal use
+  target_model: "llama3.1:8b"  # default for text/API requests (quality)
   fallback_model: "qwen2.5:3b" # used if target_model isn't pulled yet
+  voice_model: "qwen2.5:3b"    # default for voice-loop requests (latency over quality)
 ```
+
+**Model routing rule:** `orchestrator.run(..., source="voice")` (from
+`voice/voice_loop.py`) prefers `voice_model` first; `source="text"` (default,
+from `POST /command`) prefers `target_model` first. This is deliberate
+latency-vs-quality routing — not error fallback. Unpulled models fall through
+to the next candidate; nothing ever fails on a missing tag.
 
 ## `config/tools.yaml`
 

@@ -98,17 +98,18 @@ def test_command_bad_token_rejected(app_lan) -> None:
 
 
 def test_command_queued_near(app_lan, monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        orchestrator, "run", lambda text, task_id=None: calls.append((text, task_id))
-        or orchestrator.TaskResult(ok=True, output="done", task_id=task_id or "x"),
-    )
+    calls: list[tuple[str, str, str]] = []
+    def _fake_run(text, task_id=None, source="text"):
+        calls.append((text, task_id, source))
+        return orchestrator.TaskResult(ok=True, output="done", task_id=task_id or "x")
+    monkeypatch.setattr(orchestrator, "run", _fake_run)
     client = TestClient(app_lan)
     resp = client.post("/command", json={"text": "hello"}, headers={"Authorization": f"Bearer {TOKEN}"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "queued" and body["task_id"]
     assert calls and calls[0][0] == "hello" and calls[0][1] == body["task_id"]
+    assert calls[0][2] == "text"  # API path is quality-first
 
 
 def test_command_far_mode_forbidden(app_bt) -> None:
@@ -119,7 +120,9 @@ def test_command_far_mode_forbidden(app_bt) -> None:
 
 def test_command_near_with_strong_rssi(app_bt, monkeypatch) -> None:
     monkeypatch.setattr(
-        orchestrator, "run", lambda text, task_id=None: orchestrator.TaskResult(ok=True, output="d", task_id=task_id or "x")
+        orchestrator,
+        "run",
+        lambda text, task_id=None, source="text": orchestrator.TaskResult(ok=True, output="d", task_id=task_id or "x"),
     )
     client = TestClient(app_bt)
     resp = client.post(

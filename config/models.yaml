@@ -1,5 +1,6 @@
 ollama:
   host: "http://localhost:11434"
   dev_model: "qwen2.5:3b"      # fast iteration during development
-  target_model: "llama3.1:8b"  # default for normal use
+  target_model: "llama3.1:8b"  # default for text/API requests (quality)
   fallback_model: "qwen2.5:3b" # used if target_model isn't pulled yet
+  voice_model: "qwen2.5:3b"    # default for voice-loop requests (latency over quality)

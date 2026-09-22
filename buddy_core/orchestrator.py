@@ -64,13 +64,26 @@ def _model_names(client: object) -> list[str]:
     return names
 
 
-def _pick_model(client: object, models) -> str:
-    """Use target_model if pulled, else fallback/dev — never fail on a missing tag."""
+def _pick_model(client: object, models, source: str = "text") -> str:
+    """Deliberate latency-vs-quality routing (not error fallback).
+
+    - source="voice" (voice_loop): prefer voice_model first — round-trip
+      latency is the UX, so the fast model wins when pulled.
+    - source="text" (default, POST /command): prefer target_model first —
+      the user is already reading/waiting, so quality wins.
+
+    Unpulled candidates fall through; never fail on a missing tag.
+    """
+    voice_model = getattr(models, "voice_model", models.dev_model)
+    if source == "voice":
+        candidates = (voice_model, models.dev_model, models.fallback_model, models.target_model)
+    else:
+        candidates = (models.target_model, models.dev_model, models.fallback_model, voice_model)
     names = _model_names(client)
     if not names:
-        return models.fallback_model
+        return voice_model if source == "voice" else models.fallback_model
     bases = {n.split(":")[0] for n in names}
-    for candidate in (models.target_model, models.dev_model, models.fallback_model):
+    for candidate in candidates:
         if candidate in names or candidate.split(":")[0] in bases:
             return candidate
     # Nothing configured is pulled (e.g. only qwen2.5-coder present) — use what's there.
@@ -96,13 +109,17 @@ def _summarize_with_llm(client: object, model: str, command: str, context: str) 
     return resp["message"]["content"].strip()
 
 
-def run(command: str, task_id: str | None = None) -> TaskResult:
-    """Execute a command end-to-end. Never raises on agent failure — returns TaskResult."""
+def run(command: str, task_id: str | None = None, source: str = "text") -> TaskResult:
+    """Execute a command end-to-end. Never raises on agent failure — returns TaskResult.
+
+    source: "text" (default, POST /command — quality-first) or "voice"
+    (voice_loop — latency-first, prefers voice_model). See _pick_model.
+    """
     task_id = task_id or uuid.uuid4().hex[:12]
     command = command.strip()
     if not command:
         return TaskResult(ok=False, output="Empty command.", task_id=task_id)
-    _log_event("task_started", {"task_id": task_id, "text": command})
+    _log_event("task_started", {"task_id": task_id, "text": command, "source": source})
 
     models = load_models_config()
     tools_cfg = load_tools_config()
@@ -122,7 +139,7 @@ def run(command: str, task_id: str | None = None) -> TaskResult:
         from buddy_core.tools import web_search
 
         client = ollama.Client(host=models.host)
-        model = _pick_model(client, models)
+        model = _pick_model(client, models, source=source)
 
         # Step 1 — typed web_search call (no raw LLM text involved).
         step = plan.steps[0]
