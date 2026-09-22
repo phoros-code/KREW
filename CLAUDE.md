@@ -75,7 +75,12 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - DISPATCH B-backend (review-only, applied as `989e2c8`): SECURITY.md FCM note was STALE (claimed FCM ships — fixed to in-app-SSE-only) + RSSI note completed (GET /proximity, stale→null, X-RSSI single-use) + L62 tweak; `issued_at` runtime-managed note + `token_rotation_days` reserved note in example + CONFIG.md; `tls.*`/`bind_*` confirmed scripts-consumed (serve.ps1 hardcodes 8443 — noted). security.yaml exists locally, gitignored, untracked. ✓
 - DISPATCH C (`989e2c8`): HARDWARE_VERIFICATION.md checklist created (6 UNVERIFIED flags inside; notably: no in-app numeric-dBm surface for calibration, laptop consent approval is curl-only).
 - Consent-flow gap found during integration (`262cc83`): app never created consent requests so Preview could never reach ready — wired request→await→check→ready/denied (`requestScreenConsent`, `checkScreen(consentId:)`, new `consentRequired/consentDenied` states) + 5 tests. 114 pytest + 50 dart pass, analyze clean.
-- Remaining v0.1.0: JDK 17 for apk build, device run, hardware loop per HARDWARE_VERIFICATION.md (voice demo, phone-on-LAN, BLE calibration, TLS rejection, consent check), tag v0.1.0.
+## Session notes (2026-09-22, remaining-work sprint)
+
+- JDK 17 installed (`C:\src\jdk17`, Temurin 17.0.20.1, `JAVA_HOME` persisted to User env). First `flutter build apk --debug` failed on transient dl.google.com TLS stalls — retry succeeded. **APK built**: `mobile/build/app/outputs/flutter-apk/app-debug.apk` (153.8MB, gitignored), aapt confirms `package=com.everydaybuddy` v0.1.0 + launchable MainActivity.
+- Voice stack verified offline: `pip install -e .[voice]` done in venv312 (faster-whisper 1.2.1, openwakeword 0.6.0, piper-tts 1.8.0); Piper model downloaded to `voice/models/` (gitignored). **Round-trip pass**: TTS synth → 2.1s wav → STT transcribed exact text ('Hello buddy, voice check complete.', conf 0.63). Live-mic wake word still needs a human + mic.
+- Live TLS server check: /health ok, /proximity 401→200, /command queued AND completed via real model (web_search→fetch→summary in events.jsonl), consent create→approve→200, /screen without grant 403, MJPEG stream 772KB/6s with JPEG SOI. Test server stopped afterwards (port 8443 free).
+- NOT tagging v0.1.0 yet: human-only steps remain per HARDWARE_VERIFICATION.md (live-mic demo, phone-on-LAN, BLE calibration, TLS rejection on phone, in-app consent check). Voice models cached (`~/.cache`, `voice/models/`) so the human loop needs no big downloads.
 
 ## Session notes (2026-09-19)
 

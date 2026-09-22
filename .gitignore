@@ -24,6 +24,11 @@ logs/*.jsonl
 ~/buddy-workspace/
 buddy-workspace/
 
+# Local model binaries (downloaded per TESTING.md / HARDWARE_VERIFICATION.md)
+voice/models/
+*.onnx
+*.onnx.json
+
 # OS / IDE
 .DS_Store
 Thumbs.db
