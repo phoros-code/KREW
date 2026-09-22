@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import collections
 
-WAKE_WORD = "hey_buddy"
+WAKE_WORD = "alexa"  # stand-in until custom "maxxy" model is trained
 _THRESHOLD = 0.5
 _HISTORY = 16
 
