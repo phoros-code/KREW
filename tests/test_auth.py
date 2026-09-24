@@ -224,7 +224,12 @@ def test_absolute_boundary_is_inclusive(tmp_path) -> None:
     settings.idle_timeout_minutes = 60 * 24 * 45
     issued = datetime.now(timezone.utc)
     now = [issued]
-    state = AuthState(settings=settings, issued_at=issued, now=lambda: now[0])
+    state = AuthState(
+        settings=settings,
+        issued_at=issued,
+        now=lambda: now[0],
+        on_expire=lambda _event, _payload: None,  # keep the notice out of the repo log
+    )
     now[0] = issued + timedelta(days=30) - timedelta(seconds=1)
     assert not state.is_absolute_expired()
     assert state.verify(settings.token)

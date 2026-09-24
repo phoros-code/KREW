@@ -256,9 +256,13 @@ def create_app(
     event_log: str | Path | None = None,
 ) -> FastAPI:
     settings = load_auth_settings(security_path)
-    state = AuthState(settings=settings)
     prox_cfg = load_proximity_config(security_path)
     log_path = Path(event_log) if event_log else CONFIG_DIR.parent / "logs" / "events.jsonl"
+    # The expiry notice sink follows the same JSONL the SSE /events endpoint
+    # tails (auth.py DEFAULT_EVENT_LOG when None). create_app's event_log lets
+    # tests redirect BOTH the tail and the auth emit to a tmp file — otherwise
+    # a lone expired-token test writes into the production events.jsonl.
+    state = AuthState(settings=settings, event_log=log_path)
 
     # SECURITY.md: no unauthenticated endpoint except /health. FastAPI's
     # interactive docs + openapi.json would otherwise expose the full route
