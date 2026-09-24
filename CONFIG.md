@@ -48,6 +48,19 @@ agent_limits:
 
 **Rule:** the denylist is checked before the allowlist and always wins, even if a command would otherwise match an allowlist pattern. See `SECURITY.md` → Tool sandboxing.
 
+## `config/apps.yaml`
+
+Registry of GUI apps the agent may launch via the `launch_app` tool (phone command like "open notepad"). This is the ONLY source of launcher strings — raw LLM output never reaches `launch_app` (SECURITY.md rule 4).
+
+```yaml
+apps:
+  notepad:
+    display: Notepad
+    launcher: C:\windows\system32\notepad.exe
+```
+
+`key` is the stable id the planner resolves (also matched against `display`, case-insensitive). `launcher` must be an absolute `.exe` path; the tool refuses relative paths, non-existent files, and any shell metacharacters in the exe or args (via `shell.launch_detached`). Arguments are not supported — complex invocations belong in the `tools.yaml` shell allowlist, not here.
+
 ## `config/security.yaml`
 
 **Gitignored.** Ship `config/security.yaml.example` with placeholder values instead.

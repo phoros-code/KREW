@@ -20,8 +20,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from buddy_core.agents.planner import build_research_plan, validate_plan
-from buddy_core.config import load_models_config, load_tools_config
+from buddy_core.agents.planner import (
+    LAUNCH_VERBS,
+    build_list_apps_plan,
+    build_research_plan,
+    validate_plan,
+    resolve_launch_intent,
+)
+from buddy_core.config import load_apps_config, load_models_config, load_tools_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVENT_LOG = REPO_ROOT / "logs" / "events.jsonl"
@@ -109,6 +115,55 @@ def _summarize_with_llm(client: object, model: str, command: str, context: str) 
     return resp["message"]["content"].strip()
 
 
+def _run_launch(
+    task_id: str,
+    app_key: str,
+    apps_cfg,
+    tools_cfg,
+    limits,
+) -> TaskResult:
+    """Execute a launch_app plan: resolve key -> validate -> fire-and-forget."""
+    from buddy_core.tools import launch_app
+
+    _log_event("tool_call", {"task_id": task_id, "tool": "launch_app", "args": {"app_key": app_key}})
+    try:
+        result = launch_app.launch(app_key, apps_cfg, tools_cfg)
+    except launch_app.AppNotFound as exc:
+        _log_event("task_failed", {"task_id": task_id, "error": str(exc)})
+        return TaskResult(ok=False, output=str(exc), task_id=task_id, steps_taken=1)
+    if not result.ok:
+        _log_event("task_failed", {"task_id": task_id, "error": result.message})
+        return TaskResult(ok=False, output=result.message, task_id=task_id, steps_taken=1)
+    _log_event("task_completed", {"task_id": task_id, "result": result.message})
+    entry = apps_cfg.apps[app_key]
+    return TaskResult(ok=True, output=f"Launched {entry.display}.", task_id=task_id, steps_taken=1)
+
+
+def _is_list_apps(command: str) -> bool:
+    return command.lower().strip() in (
+        "list apps",
+        "show apps",
+        "what apps",
+        "apps you can open",
+        "list applications",
+    )
+
+
+def _is_launch_verb(command: str) -> bool:
+    text = command.lower().strip().split()[0] if command.strip() else ""
+    return any(text == v for v in LAUNCH_VERBS)
+
+
+def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits) -> TaskResult:
+    from buddy_core.tools import launch_app
+
+    _log_event("tool_call", {"task_id": task_id, "tool": "list_apps", "args": {}})
+    entries = launch_app.list_apps(apps_cfg)
+    out = "\n".join(entries) if entries else "No apps are registered in config/apps.yaml."
+    _log_event("task_completed", {"task_id": task_id, "result": out[:2000]})
+    return TaskResult(ok=True, output=out, task_id=task_id, steps_taken=1)
+
+
 def run(command: str, task_id: str | None = None, source: str = "text") -> TaskResult:
     """Execute a command end-to-end. Never raises on agent failure — returns TaskResult.
 
@@ -123,9 +178,23 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
 
     models = load_models_config()
     tools_cfg = load_tools_config()
+    apps_cfg = load_apps_config()
     limits = tools_cfg.agent_limits
 
     try:
+        app_key = resolve_launch_intent(command, apps_cfg)
+        if app_key:
+            return _run_launch(task_id, app_key, apps_cfg, tools_cfg, limits)
+        if _is_launch_verb(command):
+            known = ", ".join(sorted(apps_cfg.apps)) or "(none registered)"
+            _log_event("task_failed", {"task_id": task_id, "error": "Unknown app"})
+            return TaskResult(
+                ok=False,
+                output=f"Unknown app. Registered: {known}. Say 'list apps' for a full list.",
+                task_id=task_id,
+            )
+        if _is_list_apps(command):
+            return _run_list_apps(task_id, apps_cfg, tools_cfg, limits)
         plan = build_research_plan(command, limits)
         validate_plan(plan, limits)
     except Exception as exc:

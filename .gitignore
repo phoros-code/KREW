@@ -21,6 +21,7 @@ certs/*.key
 # Runtime
 logs/*.jsonl
 !logs/.gitkeep
+logs/*.log
 *.wav
 ~/buddy-workspace/
 buddy-workspace/

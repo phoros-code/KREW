@@ -59,6 +59,17 @@ class WebSearchConfig:
 
 
 @dataclass
+class AppEntry:
+    display: str
+    launcher: str
+
+
+@dataclass
+class AppsConfig:
+    apps: dict[str, AppEntry] = field(default_factory=dict)
+
+
+@dataclass
 class AgentLimits:
     max_plan_steps: int = 20
     max_recursion_depth: int = 2
@@ -110,3 +121,17 @@ def load_tools_config(path: str | Path | None = None) -> ToolsConfig:
             tool_timeout_seconds=int(limits.get("tool_timeout_seconds", 30)),
         ),
     )
+
+
+def load_apps_config(path: str | Path | None = None) -> AppsConfig:
+    data = _load_yaml(Path(path).name if path else "apps.yaml")
+    apps = data.get("apps", data)
+    registry: dict[str, AppEntry] = {}
+    for key, entry in apps.items():
+        if not isinstance(entry, dict) or not entry.get("launcher"):
+            continue
+        registry[str(key)] = AppEntry(
+            display=str(entry.get("display", key)),
+            launcher=str(entry["launcher"]),
+        )
+    return AppsConfig(apps=registry)

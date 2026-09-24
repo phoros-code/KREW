@@ -32,6 +32,14 @@ class ShellDenied(ValueError):
     """Raised when a command is not allowlisted or hits the denylist."""
 
 
+class LaunchDenied(ShellDenied):
+    """Raised for an unsafe app-launch request (bad exe, path, or args)."""
+
+    def __init__(self, reason: str, argv: list[str]):
+        super().__init__(reason)
+        self.argv = argv
+
+
 def _matches(command: str, patterns: list[str], case_insensitive: bool = False) -> str | None:
     """Return the first matching pattern, or None."""
     text = command.lower() if case_insensitive else command
@@ -101,3 +109,37 @@ def run(command: str, config: ShellConfig, timeout_seconds: int = 30) -> ShellRe
         stdout=proc.stdout,
         stderr=proc.stderr,
     )
+
+
+def launch_detached(exe_path: str, args: list[str] | None = None) -> ShellResult:
+    """Launch a GUI app detached from the agent (fire-and-forget).
+
+    Distinct from ``run``: this does NOT wait for the process to finish —
+    GUI apps like Notepad must return control to the orchestrator
+    immediately. The caller is ``buddy_core/tools/launch_app.py``, which only
+    ever passes an exe path from ``config/apps.yaml`` (never LLM text).
+
+    Slightly weaker than ``run``: args are passed as a list (no shell
+    parsing), but ``_BUILTIN_DENY_CHARS`` is still enforced on every arg.
+    The exe must be an absolute, existing path.
+    """
+    argv = [exe_path, *(args or [])]
+    for token in argv:
+        if any(ch in token for ch in _BUILTIN_DENY_CHARS):
+            raise LaunchDenied(f"Blocked: shell metacharacters not allowed: {token!r}", argv)
+    if not os.path.isabs(exe_path):
+        raise LaunchDenied(f"Launcher must be an absolute path: {exe_path!r}", argv)
+    if not os.path.isfile(exe_path):
+        raise LaunchDenied(f"Launcher does not exist: {exe_path!r}", argv)
+
+    creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — validated above; detached, no shell
+            argv,
+            shell=False,
+            close_fds=True,
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        return ShellResult(ok=False, returncode=127, stdout="", stderr=f"Failed to launch {exe_path!r}: {exc}")
+    return ShellResult(ok=True, returncode=0, stdout=f"Started PID {proc.pid}", stderr="")

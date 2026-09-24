@@ -10,10 +10,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from buddy_core.config import AgentLimits
+from buddy_core.config import AgentLimits, AppsConfig
 
 # Tool categories per ARCHITECTURE.md — an agent never calls outside its scope.
-KNOWN_TOOLS = frozenset({"web_search", "fetch_page", "shell", "read_file", "write_file", "list_dir"})
+KNOWN_TOOLS = frozenset(
+    {"web_search", "fetch_page", "shell", "read_file", "write_file", "list_dir", "launch_app", "list_apps"}
+)
+
+# Deterministic launch verbs — no LLM needed to recognize "open spotify".
+LAUNCH_VERBS = ("open", "launch", "start", "run", "open up")
 
 
 @dataclass
@@ -62,3 +67,42 @@ def build_research_plan(command: str, limits: AgentLimits) -> Plan:
     )
     validate_plan(plan, limits)
     return plan
+
+
+def build_launch_plan(app_key: str, limits: AgentLimits) -> Plan:
+    """Deterministic plan to fire-and-forget a registered app."""
+    plan = Plan(steps=[ToolCall("launch_app", {"app_key": app_key})], depth=0)
+    validate_plan(plan, limits)
+    return plan
+
+
+def build_list_apps_plan(limits: AgentLimits) -> Plan:
+    plan = Plan(steps=[ToolCall("list_apps", {})], depth=0)
+    validate_plan(plan, limits)
+    return plan
+
+
+def _normalize(value: str) -> str:
+    return value.strip().lower().replace("_", " ").replace("-", " ")
+
+
+def resolve_launch_intent(command: str, apps: AppsConfig) -> str | None:
+    """Return the registered app key for a launch-like command, else None.
+
+    Only returns keys that exist in ``config/apps.yaml`` — an unknown app
+    name is treated as a research request, never executed (SECURITY.md r4).
+    """
+    text = _normalize(command)
+    for verb in sorted(LAUNCH_VERBS, key=len, reverse=True):
+        padded = _normalize(verb) + " "
+        if text == _normalize(verb):
+            return None
+        if text.startswith(padded):
+            rest = text[len(_normalize(verb)) :].strip()
+            if not rest or rest in ("an", "a", "the", "the app", "an app", "the application"):
+                return None
+            for key, entry in apps.apps.items():
+                if rest == _normalize(key) or rest == _normalize(entry.display):
+                    return key
+            return None
+    return None

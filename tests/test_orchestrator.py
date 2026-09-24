@@ -148,3 +148,65 @@ def test_run_handles_ollama_down(monkeypatch, tmp_path) -> None:
     result = orch.run("hello")
     assert not result.ok
     assert "Ollama" in result.output
+
+
+def _fake_apps_config():
+    from buddy_core.config import AppEntry, AppsConfig
+
+    return AppsConfig(
+        apps={
+            "notepad": AppEntry(display="Notepad", launcher=r"C:\windows\system32\notepad.exe"),
+        }
+    )
+
+
+def test_run_launch_app_happy_path(monkeypatch, tmp_path) -> None:
+    from buddy_core.tools import launch_app
+    from buddy_core.tools.launch_app import LaunchResult
+
+    monkeypatch.setattr(orch, "EVENT_LOG", tmp_path / "events.jsonl")
+    monkeypatch.setattr(
+        "buddy_core.orchestrator.load_apps_config",
+        lambda: _fake_apps_config(),
+    )
+    monkeypatch.setattr(
+        "buddy_core.tools.launch_app.launch",
+        lambda key, cfg, tools: LaunchResult(ok=True, message="Started PID 42", pid=42),
+    )
+    result = orch.run("open notepad")
+    assert result.ok
+    assert "Launched Notepad" in result.output
+    assert result.steps_taken == 1
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    types = [e["type"] for e in events]
+    assert types[0] == "task_started"
+    assert "tool_call" in types
+    assert events[-1]["type"] == "task_completed"
+    assert events[-2]["tool"] == "launch_app"
+
+
+def test_run_launch_unknown_app_fails_closed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(orch, "EVENT_LOG", tmp_path / "events.jsonl")
+    monkeypatch.setattr(
+        "buddy_core.orchestrator.load_apps_config",
+        lambda: _fake_apps_config(),
+    )
+    result = orch.run("open spotify")
+    assert not result.ok
+    assert "Unknown app" in result.output
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    assert events[-1]["type"] == "task_failed"
+
+
+def test_run_list_apps(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(orch, "EVENT_LOG", tmp_path / "events.jsonl")
+    monkeypatch.setattr(
+        "buddy_core.orchestrator.load_apps_config",
+        lambda: _fake_apps_config(),
+    )
+    result = orch.run("list apps")
+    assert result.ok
+    assert "notepad" in result.output
+    assert result.steps_taken == 1

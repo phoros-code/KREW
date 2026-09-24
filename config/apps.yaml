@@ -1,0 +1,28 @@
+# App launch registry — buddy_core/tools/launch_app.py
+#
+# Every launcher here was verified present on the dev laptop (2026-09-24):
+#   calc/notepad/taskmgr via system32, mspaint/wt/spotify via WindowsApps
+#   alias stubs. Keys are stable ids the planner resolves to; the launcher
+#   string is never taken from LLM output (SECURITY.md rule 4).
+#
+# A launcher is a fixed exe path token. Arguments are not supported —
+# anything more complex belongs in a shell-allowlist entry, not here.
+apps:
+  calculator:
+    display: Calculator
+    launcher: C:\windows\system32\calc.exe
+  notepad:
+    display: Notepad
+    launcher: C:\windows\system32\notepad.exe
+  taskmgr:
+    display: Task Manager
+    launcher: C:\windows\system32\Taskmgr.exe
+  paint:
+    display: Paint
+    launcher: C:\Users\hiren\AppData\Local\Microsoft\WindowsApps\mspaint.exe
+  terminal:
+    display: Terminal
+    launcher: C:\Users\hiren\AppData\Local\Microsoft\WindowsApps\wt.exe
+  spotify:
+    display: Spotify
+    launcher: C:\Users\hiren\AppData\Local\Microsoft\WindowsApps\Spotify.exe
