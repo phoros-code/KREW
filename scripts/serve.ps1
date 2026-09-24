@@ -11,7 +11,7 @@ $key = Join-Path (Get-Location) "certs\dev-key.pem"
 if ((Test-Path $cert) -and (Test-Path $key)) {
   & $py -m uvicorn server.main:app --host 0.0.0.0 --port 8443 --ssl-certfile $cert --ssl-keyfile $key
 } elseif ($AllowPlainHttp) {
-  Write-Warning "No certs found — serving PLAIN HTTP for local dev only."
+  Write-Warning "No certs found - serving PLAIN HTTP for local dev only."
   & $py -m uvicorn server.main:app --host 127.0.0.1 --port 8443
 } else {
   throw "No TLS certs. Run scripts/gen_cert.ps1 first (or pass -AllowPlainHttp for loopback dev)."

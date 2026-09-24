@@ -2,7 +2,7 @@
 <#
 Generates a local dev TLS certificate with NO external tools (Windows built-in
 New-SelfSignedCertificate + .NET PEM export). For a phone-trusted cert, prefer
-mkcert per SECURITY.md — this script is the zero-dependency fallback.
+mkcert per SECURITY.md - this script is the zero-dependency fallback.
 
 Outputs: certs/dev-cert.pem, certs/dev-key.pem (both gitignored).
 #>
