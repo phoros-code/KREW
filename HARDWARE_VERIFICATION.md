@@ -140,6 +140,9 @@ Exact tap sequence is verified in `preview_screen.dart` + `screen_preview.dart`;
   `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent/<id2>/deny" -Method Post -Headers $h -SkipCertificateCheck`
   PASS: `{"status": "denied"}` and `GET /screen?consent_id=<id2>` → 403 `{"error": {"code": "consent_denied", ...}}`. The phone card must never show imagery for a denied id.
 - [ ] 5.6 Expiry note: approved grants expire after 15 min (`GRANT_TTL_SECONDS = 900` in `server/streams.py`) and live streams re-check every frame — a stream that stops at ~15 min is correct behavior; re-request consent.
+- [ ] 5.7 Revoke path (live grant): approve a fresh request (§5.2 → approve as in §5.4), confirm `GET /screen?consent_id=…` streams 200, then revoke it:
+  `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent/<consent_id>/revoke" -Method Post -Headers $h -SkipCertificateCheck`
+  PASS: `{"status": "revoked"}`, and re-running the same `GET /screen?consent_id=…` now returns 403 `{"error": {"code": "consent_denied", ...}}`. Revocation takes effect on the next frame re-check, so a live stream stops within ~1 frame interval. (Server-verified 2026-09-25 via curl: 403 → approved → revoked → 403; revoke is idempotent, revoke-on-pending is 409, unknown id is 404.)
 
 ---
 

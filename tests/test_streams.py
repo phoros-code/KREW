@@ -450,6 +450,36 @@ def test_approve_after_deny_conflicts(app_lan) -> None:
     assert resp.json()["error"]["code"] == "consent_denied"
 
 
+def test_revoke_unknown_consent_404(app_lan) -> None:
+    client = TestClient(app_lan)
+    resp = client.post("/screen/consent/does-not-exist/revoke", headers=_auth())
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "not_found"
+
+
+def test_revoke_pending_conflicts(app_lan) -> None:
+    client = TestClient(app_lan)
+    cid = _request_consent(client)
+    resp = client.post(f"/screen/consent/{cid}/revoke", headers=_auth())
+    assert resp.status_code == 409
+
+
+def test_revoke_live_grant_stops_stream(app_lan, fake_capture) -> None:
+    client = TestClient(app_lan)
+    cid = _request_consent(client)
+    _approve(client, cid)
+    resp = client.post(f"/screen/consent/{cid}/revoke", headers=_auth())
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "revoked"
+    # Idempotent: second revoke is still 200.
+    again = client.post(f"/screen/consent/{cid}/revoke", headers=_auth())
+    assert again.status_code == 200
+    # The revoked grant now fails closed with consent_denied.
+    denied = client.get(f"/screen?consent_id={cid}", headers=_auth())
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "consent_denied"
+
+
 # --- unit: ConsentManager ---
 
 
@@ -474,6 +504,19 @@ def test_consent_manager_deny_path() -> None:
     assert mgr.status_of(cid) is streams.ConsentStatus.DENIED
     assert mgr.deny(cid) is True  # idempotent
     assert mgr.approve(cid) is False  # denied stays denied
+
+
+def test_consent_manager_revoke_path() -> None:
+    mgr = streams.ConsentManager()
+    cid = mgr.start_consent_request()
+    assert mgr.revoke(cid) is False  # pending is not a grant — use deny
+    assert mgr.revoke("unknown") is False
+    assert mgr.approve(cid) is True
+    assert mgr.revoke(cid) is True
+    assert mgr.status_of(cid) is streams.ConsentStatus.REVOKED
+    assert mgr.is_approved(cid) is False  # fail closed after revoke
+    assert mgr.revoke(cid) is True  # idempotent
+    assert mgr.approve(cid) is False  # revoked stays revoked
 
 
 def test_consent_manager_expiry() -> None:

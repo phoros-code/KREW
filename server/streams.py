@@ -79,6 +79,7 @@ class ConsentStatus(str, Enum):
     PENDING = "pending"
     APPROVED = "approved"
     DENIED = "denied"
+    REVOKED = "revoked"  # was APPROVED, pulled back early — fail-closed like DENIED
 
 
 @dataclass
@@ -146,6 +147,26 @@ class ConsentManager:
                 logger.info("screen consent denied: %s…", consent_id[:8])
                 return True
             return False  # already APPROVED — deny does not revoke; let it expire
+
+    def revoke(self, consent_id: str) -> bool:
+        """Pull back a live grant early (APPROVED → REVOKED). Idempotent.
+
+        Returns False for unknown/expired IDs and for PENDING requests
+        (use deny for those) — revocation is strictly a grant operation.
+        """
+        with self._lock:
+            self._purge_locked()
+            record = self._records.get(consent_id)
+            if record is None:
+                return False
+            if record.status is ConsentStatus.REVOKED:
+                return True
+            if record.status is ConsentStatus.APPROVED:
+                record.status = ConsentStatus.REVOKED
+                record.created_at = self.now()
+                logger.info("screen consent revoked: %s…", consent_id[:8])
+                return True
+            return False
 
     def status_of(self, consent_id: str) -> ConsentStatus | None:
         """Current status, or None for unknown/expired IDs (fail closed)."""

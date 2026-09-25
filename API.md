@@ -81,6 +81,14 @@ data: {"task_id": "b7e1...", "error": "..."}
 
 Multipart MJPEG stream of the laptop's primary display, adaptive frame rate (see `PROJECT_SPEC.md` → Risks, battery drain mitigation).
 
+Consent flow (all near-only, all require auth):
+
+- `POST /screen/consent` → `{"consent_id": "<hex>", "status": "pending"}`
+- `POST /screen/consent/{id}/approve` → `{"status": "approved"}` (409 if denied)
+- `POST /screen/consent/{id}/deny` → `{"status": "denied"}` (409 if already approved — deny does not revoke)
+- `POST /screen/consent/{id}/revoke` → `{"status": "revoked"}` — pulls back a live grant early; takes effect on the next frame re-check. Idempotent; 409 if the request is still pending, 404 for unknown/expired ids.
+- `GET /screen?consent_id=…` (or `X-Consent-Id` header) → 200 MJPEG while approved; 403 `consent_required` pre-approval/unknown, 403 `consent_denied` after deny **or revoke**. Grants expire after 15 min.
+
 ## `GET /webcam` (MJPEG/WebRTC)
 
 **Proximity: near only.** Same consent requirement as `/screen`. Optional feature — omit entirely if you don't need it for v1.

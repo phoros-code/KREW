@@ -4,7 +4,7 @@
 - POST /command  — near only, queues orchestrator.run() in the background
 - GET  /events   — near or far, SSE tail of logs/events.jsonl
 - GET  /screen   — near only + explicit consent grant, MJPEG stream
-- POST /screen/consent (+ /{id}/approve, /{id}/deny) — consent flow, near only
+- POST /screen/consent (+ /{id}/approve, /{id}/deny, /{id}/revoke) — consent flow, near only
 
 Every route except /health requires the bearer dependency from server.auth.
 Proximity failures default to FAR (fail closed — SECURITY.md).
@@ -403,6 +403,20 @@ def create_app(
             raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
         raise _http_error(409, {"error": {"code": "conflict", "message": "Consent already approved"}})
 
+    @app.post("/screen/consent/{consent_id}/revoke")
+    def screen_consent_revoke(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
+        """Laptop-side early revocation of a live grant (near-only).
+
+        Revocation takes effect on the next per-frame re-check, so a live
+        /screen stream stops within ~1 frame interval.
+        """
+        if consent.revoke(consent_id):
+            return {"consent_id": consent_id, "status": "revoked"}
+        status = consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        raise _http_error(409, {"error": {"code": "conflict", "message": "Consent is not an active grant"}})
+
     @app.get("/screen")
     def screen(request: Request, _auth: AuthState = Depends(require_near)) -> StreamingResponse:
         """MJPEG stream of the primary display — near-only AND consent-gated.
@@ -415,7 +429,7 @@ def create_app(
         status = consent.status_of(consent_id)
         if status is None:
             raise _http_error(403, ERROR_CONSENT_REQUIRED)
-        if status is streams.ConsentStatus.DENIED:
+        if status in (streams.ConsentStatus.DENIED, streams.ConsentStatus.REVOKED):
             raise _http_error(403, ERROR_CONSENT_DENIED)
         if status is not streams.ConsentStatus.APPROVED:
             raise _http_error(403, ERROR_CONSENT_REQUIRED)
