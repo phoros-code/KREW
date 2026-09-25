@@ -50,6 +50,23 @@ This is the highest-stakes part of the whole project, because the agent's job is
 
 ## Consent
 
+Track A3 (BREAKING): consent is now a genuine second-party gate, not a
+phone self-approval. Request creation stays phone-token + near
+(`POST /screen/consent`, `POST /webcam/consent`), but approval/denial
+requires LAPTOP confirmation — either loopback origin (`127.0.0.1`/`::1`,
+e.g. curl from the laptop) or header `X-Buddy-Approval` constant-time
+matching (`hmac.compare_digest`) `auth.consent_approval_secret` (64-hex,
+generated on first run via `server.auth.generate_approval_secret`,
+persisted 0600 in `security.yaml`). Phone-token-only approve/deny fails
+closed with 403 `approval_forbidden`. Revoke stays phone-token-gated
+(fail-closed stop must always work from the phone). Separate scopes:
+a screen grant never authorizes `/webcam` and vice versa. Caps: 1 live
+stream per grant + 4 per IP (429 `stream_limit` + `Retry-After`); one
+capture handle per stream (`mss.mss()` / `cv2.VideoCapture`, opened once,
+released on disconnect). Lifetimes/bounds live in the `streams:` block
+(`target_fps`, `max_consecutive_failures`, `pending_ttl_seconds`,
+`grant_ttl_seconds`, `max_consent_records`).
+
 Explicit, un-skippable prompts before:
 - Starting a screen share
 - Starting webcam access

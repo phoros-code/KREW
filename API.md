@@ -95,15 +95,15 @@ data: {"task_id": "b7e1...", "error": "..."}
 
 **Proximity: near only.** Requires the explicit on-device consent flow described in `SECURITY.md` before the stream starts — don't wire this to auto-start on connect.
 
-Multipart MJPEG stream of the laptop's primary display, adaptive frame rate (see `PROJECT_SPEC.md` → Risks, battery drain mitigation).
+Multipart MJPEG stream of the laptop's primary display, adaptive frame rate (see `PROJECT_SPEC.md` → Risks, battery drain mitigation). One `mss.mss()` handle per stream (opened once, closed on disconnect); caps: 1 concurrent stream per consent id + 4 per client IP (excess → 429 `stream_limit` + `Retry-After`).
 
-Consent flow (all near-only, all require auth):
+Consent flow (Track A3, BREAKING — laptop-only approval):
 
-- `POST /screen/consent` → `{"consent_id": "<hex>", "status": "pending"}`
-- `POST /screen/consent/{id}/approve` → `{"status": "approved"}` (409 if denied)
-- `POST /screen/consent/{id}/deny` → `{"status": "denied"}` (409 if already approved — deny does not revoke)
-- `POST /screen/consent/{id}/revoke` → `{"status": "revoked"}` — pulls back a live grant early; takes effect on the next frame re-check. Idempotent; 409 if the request is still pending, 404 for unknown/expired ids.
-- `GET /screen?consent_id=…` (or `X-Consent-Id` header) → 200 MJPEG while approved; 403 `consent_required` pre-approval/unknown, 403 `consent_denied` after deny **or revoke**. Grants expire after 15 min.
+- `POST /screen/consent` (phone-token + near) → `{"consent_id": "<hex>", "status": "pending"}`
+- `POST /screen/consent/{id}/approve` (laptop-only: loopback `127.0.0.1`/`::1` OR `X-Buddy-Approval` matching `auth.consent_approval_secret` via constant-time compare; phone-token-only → 403 `approval_forbidden`) → `{"status": "approved"}` (409 if denied)
+- `POST /screen/consent/{id}/deny` (same laptop-only rule as approve) → `{"status": "denied"}` (409 if already approved — deny does not revoke)
+- `POST /screen/consent/{id}/revoke` (phone-token + near — stays phone-gated so fail-closed stop always works) → `{"status": "revoked"}` — pulls back a live grant early; takes effect on the next frame re-check. Idempotent; 409 if the request is still pending, 404 for unknown/expired ids.
+- `GET /screen?consent_id=…` (or `X-Consent-Id` header) → 200 MJPEG while approved; 403 `consent_required` pre-approval/unknown, 403 `consent_denied` after deny **or revoke**. Grants expire after 15 min (`streams.grant_ttl_seconds`).
 
 ## `GET /webcam` (MJPEG)
 
@@ -112,16 +112,17 @@ a `/screen` approval must NEVER authorize `/webcam` and vice versa (separate
 consent scopes server-side; a grant from one flow returns 403
 `consent_required` on the other stream).
 
-Multipart MJPEG stream of the laptop webcam (OpenCV capture, JPEG-encoded in
-memory, never persisted — same transport and adaptive frame rate as
-`/screen`).
+Multipart MJPEG stream of the laptop webcam (one `cv2.VideoCapture` per
+stream, opened once, released on disconnect; JPEG-encoded in memory, never
+persisted — same transport and adaptive frame rate as `/screen`). Same
+caps as `/screen`: 1 per consent id + 4 per IP (429 `stream_limit`).
 
-Consent flow (all near-only, all require auth — same codes/TTLs as `/screen`):
+Consent flow (Track A3, same laptop-only approval rule as `/screen`):
 
-- `POST /webcam/consent` → `{"consent_id": "<hex>", "status": "pending"}`
-- `POST /webcam/consent/{id}/approve` → `{"status": "approved"}` (409 if denied)
-- `POST /webcam/consent/{id}/deny` → `{"status": "denied"}` (409 if already approved — deny does not revoke)
-- `POST /webcam/consent/{id}/revoke` → `{"status": "revoked"}` — pulls back a live grant early; takes effect on the next frame re-check. Idempotent; 409 if the request is still pending, 404 for unknown/expired ids.
+- `POST /webcam/consent` (phone-token + near) → `{"consent_id": "<hex>", "status": "pending"}`
+- `POST /webcam/consent/{id}/approve` (laptop-only: loopback OR `X-Buddy-Approval`; phone-only → 403 `approval_forbidden`) → `{"status": "approved"}` (409 if denied)
+- `POST /webcam/consent/{id}/deny` (same laptop-only rule) → `{"status": "denied"}` (409 if already approved — deny does not revoke)
+- `POST /webcam/consent/{id}/revoke` (phone-token + near) → `{"status": "revoked"}` — pulls back a live grant early; takes effect on the next frame re-check. Idempotent; 409 if the request is still pending, 404 for unknown/expired ids.
 - `GET /webcam?consent_id=…` (or `X-Consent-Id` header) → 200 MJPEG while approved; 403 `consent_required` pre-approval/unknown/cross-scope, 403 `consent_denied` after deny **or revoke**. Grants expire after 15 min.
 
 ## Proximity gating summary
@@ -152,6 +153,14 @@ re-pair prompt" directly, without waiting for a `token_expired` SSE frame
 
 429 carries either `locked_out` (too many bad tokens — wait out
 `lockout_minutes`) or `rate_limited` (over `network.rate_limit_per_minute`
-requests from your IP — wait per the `Retry-After` header and retry).
+requests from your IP — wait per the `Retry-After` header and retry) or
+`stream_limit` (too many concurrent MJPEG streams: 1 per consent id + 4
+per IP — wait per `Retry-After` and retry; the existing stream keeps its
+slot until it disconnects).
+
+403 on approve/deny carries `approval_forbidden` when the caller has a valid
+phone token but is not loopback and did not present the laptop-only
+`X-Buddy-Approval` secret (Track A3) — approve from the laptop (loopback
+curl or the secret header), not from the phone.
 
 Design the phone app's error *states* for each of these — see `UI_UX_GUIDE.md`, "design real error states" — rather than surfacing the raw JSON.

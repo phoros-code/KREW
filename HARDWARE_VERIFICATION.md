@@ -120,27 +120,28 @@ Goal: pick `rssi_near_threshold` (dBm) for YOUR hardware. Repo default is `-60`;
 
 ---
 
-## 5. Consent-gated stream check (`/screen` must NEVER autostart)
+## 5. Consent-gated stream check (`/screen` must NEVER autostart) — Track A3 (BREAKING)
 
-Exact tap sequence is verified in `preview_screen.dart` + `screen_preview.dart`; server rules in `server/main.py` (`consent_required` / `consent_denied` 403s) and `server/streams.py` (grant TTL 15 min, per-frame re-check). **[UNVERIFIED — not in repo — implementation gap flagged]**: the current phone build's `checkScreen()` performs `GET /screen` with NO `consent_id`, so against the current server it always gets `403 consent_required` and can never reach `200 available`; the app also has no `POST /screen/consent` button — the consent request below must be issued with `curl` (laptop side) until the app wires the consent endpoints. Test the GATE as written, not as wished.
+Exact tap sequence is verified in `preview_screen.dart` + `screen_preview.dart`; server rules in `server/main.py` (`consent_required` / `consent_denied` / `approval_forbidden` 403s, `stream_limit` 429s) and `server/streams.py` (grant TTL 15 min via `streams.grant_ttl_seconds`, per-frame re-check, 1-per-grant + 4-per-IP caps, single handle per stream). Track A3: approval is LAPTOP-ONLY — curl approval below must run ON THE LAPTOP (loopback `127.0.0.1` passes without the secret) or present `X-Buddy-Approval` matching `auth.consent_approval_secret` (64-hex, printed on first run / in `security.yaml`); phone-token-only approve/deny now correctly 403s with `approval_forbidden`. Phone tap sequence is UNCHANGED (tap documents intent; approval still happens on the laptop). **[UNVERIFIED — not in repo — implementation gap flagged]**: the current phone build's `checkScreen()` performs `GET /screen` with NO `consent_id`, so against the current server it always gets `403 consent_required` and can never reach `200 available`; the app also has no `POST /screen/consent` button — the consent request below must be issued with `curl` (laptop side) until the app wires the consent endpoints. Test the GATE as written, not as wished.
 
 - [ ] 5.1 No-autostart check: pair the app, keep it NEAR (same Wi-Fi; `lan_only` mode counts LAN arrival as near), bottom nav → `Screen` tab (title `Laptop screen`, subtitle `Near-only, consent-gated live view. Nothing starts until you ask it to.`).
   PASS: the tab shows the consent card with the button `I understand — start preview` and NO network/stream activity — no spinner, no image, no `Requesting preview…`. Opening the tab alone must never call `/screen`. (FAR state instead shows `Preview unavailable while FAR`; unpaired shows `No laptop paired yet` — both also prove no autostart.)
 - [ ] 5.2 Consent request (laptop `curl` — replace `<ip>` and `<token>` with the §2 values; PowerShell quoting):
   `$h = @{"Authorization"="Bearer <token>"};`
   `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent" -Method Post -Headers $h -SkipCertificateCheck`
-  PASS: `{"consent_id": "<hex>", "status": "pending"}`. Copy the `consent_id`. (Failing with `403 forbidden` = you are FAR — fix proximity first. This endpoint is near-only.)
+  PASS: `{"consent_id": "<hex>", "status": "pending"}`. Copy the `consent_id`. (Failing with `403 forbidden` = you are FAR — fix proximity first. This endpoint is near-only, phone-token + near.)
 - [ ] 5.3 Before-approval gate (must be empty): still on the laptop,
   `Invoke-RestMethod -Uri "https://<ip>:8443/screen?consent_id=<consent_id>" -Headers $h -SkipCertificateCheck`
   PASS: HTTP 403 with `{"error": {"code": "consent_required", ...}}` — ZERO `/screen` bytes flow before approval. Any image bytes here = FAIL (fail-closed broken).
-- [ ] 5.4 Approve → stream starts. On the phone tap `I understand — start preview` (documents user intent), then on the laptop approve the SAME id:
-  `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent/<consent_id>/approve" -Method Post -Headers $h -SkipCertificateCheck`
-  PASS: `{"consent_id": "<same>", "status": "approved"}`, and re-running the §5.3 `GET /screen?consent_id=…` now returns 200 MJPEG bytes (`multipart/x-mixed-replace`). In the current app build the card may still read `Preview failed` (it never sends the id — the §5 gap above) — the SERVER gate passing (403→200 across approve) is the PASS criterion for this checklist.
-- [ ] 5.5 Deny path (fresh request): create a second consent (`§5.2` again → `<id2>`), then
-  `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent/<id2>/deny" -Method Post -Headers $h -SkipCertificateCheck`
-  PASS: `{"status": "denied"}` and `GET /screen?consent_id=<id2>` → 403 `{"error": {"code": "consent_denied", ...}}`. The phone card must never show imagery for a denied id.
-- [ ] 5.6 Expiry note: approved grants expire after 15 min (`GRANT_TTL_SECONDS = 900` in `server/streams.py`) and live streams re-check every frame — a stream that stops at ~15 min is correct behavior; re-request consent.
-- [ ] 5.7 Revoke path (live grant): approve a fresh request (§5.2 → approve as in §5.4), confirm `GET /screen?consent_id=…` streams 200, then revoke it:
+- [ ] 5.4 Approve → stream starts. On the phone tap `I understand — start preview` (documents user intent — unchanged), then ON THE LAPTOP approve the SAME id (loopback bypass — no secret header needed when run on the laptop; from any non-loopback host add `-Headers @{"X-Buddy-Approval"="<64-hex secret>"}` or expect 403 `approval_forbidden`):
+  `Invoke-RestMethod -Uri "https://127.0.0.1:8443/screen/consent/<consent_id>/approve" -Method Post -Headers $h -SkipCertificateCheck`
+  (Read the secret from `config/security.yaml` → `auth.consent_approval_secret` if you must approve remotely: add `"X-Buddy-Approval"="<secret>"` to `$h`.)
+  PASS: `{"consent_id": "<same>", "status": "approved"}`, and re-running the §5.3 `GET /screen?consent_id=…` now returns 200 MJPEG bytes (`multipart/x-mixed-replace`). Phone-token-only approve from a non-loopback host without the secret must 403 `approval_forbidden` (prove it once: same approve via the LAN IP without the secret header → 403). In the current app build the card may still read `Preview failed` (it never sends the id — the §5 gap above) — the SERVER gate passing (403→200 across approve) is the PASS criterion for this checklist.
+- [ ] 5.5 Deny path (fresh request): create a second consent (`§5.2` again → `<id2>`), then ON THE LAPTOP
+  `Invoke-RestMethod -Uri "https://127.0.0.1:8443/screen/consent/<id2>/deny" -Method Post -Headers $h -SkipCertificateCheck`
+  PASS: `{"status": "denied"}` and `GET /screen?consent_id=<id2>` → 403 `{"error": {"code": "consent_denied", ...}}`. Phone-only deny without secret → 403 `approval_forbidden`. The phone card must never show imagery for a denied id.
+- [ ] 5.6 Expiry note: approved grants expire after 15 min (`streams.grant_ttl_seconds = 900` in `security.yaml` / `server/streams.py`) and live streams re-check every frame — a stream that stops at ~15 min is correct behavior; re-request consent. Caps: a second concurrent stream on the same grant → 429 `stream_limit` + `Retry-After`; 5th concurrent stream from the same IP → 429 `stream_limit`.
+- [ ] 5.7 Revoke path (live grant, still phone-gated): approve a fresh request (§5.2 → approve as in §5.4), confirm `GET /screen?consent_id=…` streams 200, then revoke it (phone token works — no secret needed):
   `Invoke-RestMethod -Uri "https://<ip>:8443/screen/consent/<consent_id>/revoke" -Method Post -Headers $h -SkipCertificateCheck`
   PASS: `{"status": "revoked"}`, and re-running the same `GET /screen?consent_id=…` now returns 403 `{"error": {"code": "consent_denied", ...}}`. Revocation takes effect on the next frame re-check, so a live stream stops within ~1 frame interval. (Server-verified 2026-09-25 via curl: 403 → approved → revoked → 403; revoke is idempotent, revoke-on-pending is 409, unknown id is 404.)
 
