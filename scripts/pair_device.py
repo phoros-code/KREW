@@ -16,6 +16,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server.auth import load_auth_settings
 
+# Port the server binds (scripts/serve.ps1 reads the same key). Hardcoded
+# fallback when config/security.yaml or the key is absent.
+DEFAULT_PORT = 8443
+
+
+def bind_port() -> int:
+    """Read network.bind_port from config/security.yaml, else DEFAULT_PORT."""
+    try:
+        import yaml
+    except ImportError:
+        return DEFAULT_PORT
+    candidate = Path("config/security.yaml")
+    try:
+        data = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return DEFAULT_PORT
+    except yaml.YAMLError:
+        return DEFAULT_PORT
+    net = data.get("network", {}) or {}
+    try:
+        port = int(net.get("bind_port", DEFAULT_PORT))
+    except (TypeError, ValueError):
+        return DEFAULT_PORT
+    return port if 1 <= port <= 65535 else DEFAULT_PORT
+
 
 def lan_ips() -> list[str]:
     ips: set[str] = set()
@@ -48,7 +73,7 @@ def main() -> int:
     settings = load_auth_settings()
     print("=== Everyday Buddy pairing ===")
     print(f"LAN IP(s) : {', '.join(lan_ips()) or '(unknown)'}")
-    print("Port      : 8443 (https)")
+    print(f"Port      : {bind_port()} (https)")
     print(f"Token     : {settings.token}")
     print(f"Cert SHA256: {cert_fingerprint()}")
     print("Enter the IP + token in the phone app, verify the fingerprint matches.")
