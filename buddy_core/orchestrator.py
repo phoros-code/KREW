@@ -34,6 +34,9 @@ from buddy_core.config import load_apps_config, load_models_config, load_tools_c
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVENT_LOG = REPO_ROOT / "logs" / "events.jsonl"
 
+# Explicit client timeout (Track A1): no unbounded Ollama call from /command.
+OLLAMA_TIMEOUT_SECONDS = 60
+
 
 @dataclass
 class TaskResult:
@@ -174,7 +177,7 @@ def _run_code(task_id: str, command: str, rel_path: str, models, tools_cfg, sour
     from buddy_core.agents.executor import execute_plan
 
     try:
-        client = ollama.Client(host=models.host)
+        client = ollama.Client(host=models.host, timeout=OLLAMA_TIMEOUT_SECONDS)
         model = _pick_model(client, models, source=source)
         content = coder.draft_content(client, model, command, rel_path)
         plan = build_code_plan(rel_path, content, tools_cfg.agent_limits)
@@ -236,7 +239,7 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
 
         from buddy_core.tools import web_search
 
-        client = ollama.Client(host=models.host)
+        client = ollama.Client(host=models.host, timeout=OLLAMA_TIMEOUT_SECONDS)
         model = _pick_model(client, models, source=source)
 
         # Step 1 — typed web_search call (no raw LLM text involved).
