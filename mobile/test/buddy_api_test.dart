@@ -459,4 +459,194 @@ void main() {
       api.close();
     });
   });
+
+  group('BuddyApi throttled probes (Task A: honest 429 copy)', () {
+    BuddyApi apiWith(MockClient client) =>
+        BuddyApi(host: '192.168.1.10', token: 't', client: client);
+
+    test('checkScreen maps a locked_out 429 to rateLimited', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "locked_out", "message": "too many bad tokens"}}',
+          429,
+        )),
+      );
+      expect(
+        await api.checkScreen(consentId: 'abc'),
+        ScreenStatus.rateLimited,
+      );
+      api.close();
+    });
+
+    test('checkScreen maps a rate_limited 429 to rateLimited', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "rate_limited", "message": "slow down"}}',
+          429,
+        )),
+      );
+      expect(
+        await api.checkScreen(consentId: 'abc'),
+        ScreenStatus.rateLimited,
+      );
+      api.close();
+    });
+
+    test('checkScreen maps a bare 429 (no JSON body) to rateLimited', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response('<html>proxy exploded</html>', 429)),
+      );
+      expect(
+        await api.checkScreen(consentId: 'abc'),
+        ScreenStatus.rateLimited,
+      );
+      api.close();
+    });
+
+    test('checkWebcam maps a rate_limited 429 to rateLimited', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "rate_limited", "message": "slow down"}}',
+          429,
+        )),
+      );
+      expect(
+        await api.checkWebcam(consentId: 'abc'),
+        ScreenStatus.rateLimited,
+      );
+      api.close();
+    });
+  });
+
+  group('BuddyApi webcam consent flow (Task B: separate scope)', () {
+    BuddyApi apiWith(MockClient client) =>
+        BuddyApi(host: '192.168.1.10', token: 't', client: client);
+
+    test('requestWebcamConsent posts /webcam/consent and returns the id',
+        () async {
+      String? seenPath;
+      String? seenMethod;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenPath = req.url.path;
+          seenMethod = req.method;
+          return http.Response('{"consent_id": "cam1", "status": "pending"}', 200);
+        }),
+      );
+      expect(await api.requestWebcamConsent(), 'cam1');
+      expect(seenMethod, 'POST');
+      expect(seenPath, '/webcam/consent');
+      api.close();
+    });
+
+    test('requestWebcamConsent never touches the screen endpoint', () async {
+      final List<String> paths = <String>[];
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          paths.add(req.url.path);
+          return http.Response('{"consent_id": "cam1", "status": "pending"}', 200);
+        }),
+      );
+      await api.requestWebcamConsent();
+      expect(paths, everyElement(isNot(contains('/screen'))));
+      api.close();
+    });
+
+    test('revokeWebcamConsent posts the webcam revoke path', () async {
+      String? seenPath;
+      String? seenMethod;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenPath = req.url.path;
+          seenMethod = req.method;
+          return http.Response(
+            '{"consent_id": "abc", "status": "revoked"}',
+            200,
+          );
+        }),
+      );
+      await api.revokeWebcamConsent('abc');
+      expect(seenMethod, 'POST');
+      expect(seenPath, '/webcam/consent/abc/revoke');
+      api.close();
+    });
+
+    test('revokeWebcamConsent rejects an empty grant without network',
+        () async {
+      bool hitNetwork = false;
+      final api = apiWith(
+        MockClient((_) async {
+          hitNetwork = true;
+          return http.Response('{}', 200);
+        }),
+      );
+      expect(
+        api.revokeWebcamConsent(''),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'bad_request'),
+        ),
+      );
+      expect(hitNetwork, isFalse);
+      api.close();
+    });
+
+    test('webcamStreamUrl carries the grant as consent_id query', () {
+      final api = apiWith(MockClient((_) async => http.Response('', 200)));
+      final Uri url = api.webcamStreamUrl('cam1');
+      expect(url.scheme, 'https');
+      expect(url.path, '/webcam');
+      expect(url.queryParameters['consent_id'], 'cam1');
+      api.close();
+    });
+
+    test('checkWebcam sends the grant to /webcam, never /screen', () async {
+      String? seenPath;
+      String? seenQuery;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenPath = req.url.path;
+          seenQuery = req.url.query;
+          return http.Response(
+            '{"error": {"code": "consent_required", "message": "needs approval"}}',
+            403,
+          );
+        }),
+      );
+      expect(
+        await api.checkWebcam(consentId: 'cam1'),
+        ScreenStatus.consentRequired,
+      );
+      expect(seenPath, '/webcam');
+      expect(seenQuery, contains('consent_id=cam1'));
+      api.close();
+    });
+
+    test('checkWebcam maps denied grants to consentDenied', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "consent_denied", "message": "denied"}}',
+          403,
+        )),
+      );
+      expect(
+        await api.checkWebcam(consentId: 'dead'),
+        ScreenStatus.consentDenied,
+      );
+      api.close();
+    });
+
+    test('checkWebcam without a grant probes the bare endpoint', () async {
+      String? seenQuery;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenQuery = req.url.query;
+          return http.Response('jpeg-bytes', 200);
+        }),
+      );
+      expect(await api.checkWebcam(), ScreenStatus.available);
+      expect(seenQuery, isEmpty);
+      api.close();
+    });
+  });
 }
