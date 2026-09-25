@@ -80,12 +80,19 @@ apps:
 ```yaml
 auth:
   token: ""                     # generated on first run, never committed
+  consent_approval_secret: ""   # Track A3 (BREAKING): 64-hex laptop-only secret, generated on first run via server.auth.generate_approval_secret (secrets.token_hex(32)); approve/deny require loopback OR X-Buddy-Approval matching this — phone-token-only gets 403 approval_forbidden; revoke stays phone-gated
   token_rotation_days: 30       # reserved, NOT enforced — the hard ceiling is token_absolute_max_age_days
   token_absolute_max_age_days: 30  # hard ceiling from issuance, regardless of activity; forces re-pairing
   # issued_at: ""               # runtime-managed (ISO-8601 UTC, written on first run + rotate); missing/naive = expired
   max_failed_attempts: 5
   lockout_minutes: 15
   idle_timeout_minutes: 60
+streams:                        # Track A3: read via load_streams_config with current defaults; ConsentManager takes them as constructor args
+  target_fps: 2.0               # idle MJPEG frame rate
+  max_consecutive_failures: 10  # then stop the stream instead of spinning
+  pending_ttl_seconds: 300      # unactioned consent request TTL
+  grant_ttl_seconds: 900        # approved grant TTL (15 min)
+  max_consent_records: 256      # hard cap on consent records
 tls:                            # consumed by scripts/serve.ps1 + gen_cert (paths), not by server/ loaders
   cert_path: "certs/dev-cert.pem"
   key_path: "certs/dev-key.pem"

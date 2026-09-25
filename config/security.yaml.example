@@ -1,5 +1,6 @@
 auth:
   token: ""                     # generated on first run, never committed
+  consent_approval_secret: ""   # Track A3 (BREAKING): 64-hex laptop-only approval secret, generated on first run (secrets.token_hex(32)); approve/deny require loopback OR X-Buddy-Approval matching this — phone-token-only approve/deny gets 403 approval_forbidden; revoke stays phone-gated
   token_rotation_days: 30       # reserved, NOT enforced — the hard ceiling is token_absolute_max_age_days below
   token_absolute_max_age_days: 30  # hard ceiling from issuance, regardless of activity; forces re-pairing
   # issued_at: ""               # runtime-managed (ISO-8601 UTC, written on first run + rotate) — do not hand-edit;
@@ -8,6 +9,12 @@ auth:
   lockout_minutes: 15
   idle_timeout_minutes: 60
 streams_follow_counts_as_activity: false  # Track A1: stream keep-alives (/events ticks, /screen//webcam frames) do NOT extend idle by default — idle decays from real requests only; set true to restore pre-A1 heartbeat behaviour
+streams:                        # Track A3: stream behaviour + consent lifetimes (all have safe defaults — missing block falls back to these values)
+  target_fps: 2.0               # idle MJPEG frame rate; slow clients transparently get fewer fps
+  max_consecutive_failures: 10  # then stop the stream instead of spinning
+  pending_ttl_seconds: 300      # unactioned consent request expires after 5 min
+  grant_ttl_seconds: 900        # approved grant expires after 15 min
+  max_consent_records: 256      # hard cap on consent records (fail-closed eviction)
 tls:
   cert_path: "certs/dev-cert.pem"
   key_path: "certs/dev-key.pem"
