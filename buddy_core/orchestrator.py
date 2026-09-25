@@ -23,6 +23,7 @@ from pathlib import Path
 from buddy_core.agents.planner import (
     LAUNCH_VERBS,
     build_code_plan,
+    build_launch_plan,
     build_list_apps_plan,
     build_research_plan,
     validate_plan,
@@ -148,15 +149,25 @@ def _run_launch(
     tools_cfg,
     limits,
 ) -> TaskResult:
-    """Execute a launch_app plan: resolve key -> validate -> fire-and-forget."""
+    """Execute a launch_app plan: build -> validate -> execute the single step.
+
+    Track A4: the typed plan (planner.build_launch_plan) is the only thing
+    that reaches the tool — an oversized plan or unknown tool is rejected by
+    validate_plan (raising PlanRejected to run()'s handler) before anything
+    launches. Emitted event shapes are unchanged: tool_call(launch_app)
+    then task_completed/task_failed, same payloads as before.
+    """
     from buddy_core.tools import launch_app
 
+    plan = build_launch_plan(app_key, limits)
+    validate_plan(plan, limits)
+    step_args = plan.steps[0].args
     _log_event(
         "tool_call",
-        {"task_id": task_id, "tool": "launch_app", "args": redact_event_args("launch_app", {"app_key": app_key})},
+        {"task_id": task_id, "tool": "launch_app", "args": redact_event_args("launch_app", step_args)},
     )
     try:
-        result = launch_app.launch(app_key, apps_cfg, tools_cfg)
+        result = launch_app.launch(step_args["app_key"], apps_cfg, tools_cfg)
     except launch_app.AppNotFound as exc:
         _log_event("task_failed", {"task_id": task_id, "error": str(exc)})
         return TaskResult(ok=False, output=str(exc), task_id=task_id, steps_taken=1)
@@ -184,9 +195,16 @@ def _is_launch_verb(command: str) -> bool:
 
 
 def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits) -> TaskResult:
+    """Execute a list_apps plan: build -> validate -> execute the single step.
+
+    Track A4: same typed-plan discipline as _run_launch — the validated plan
+    is the only thing that reaches the tool. Event shapes unchanged.
+    """
     from buddy_core.tools import launch_app
 
-    _log_event("tool_call", {"task_id": task_id, "tool": "list_apps", "args": redact_event_args("list_apps", {})})
+    plan = build_list_apps_plan(limits)
+    validate_plan(plan, limits)
+    _log_event("tool_call", {"task_id": task_id, "tool": "list_apps", "args": redact_event_args("list_apps", plan.steps[0].args)})
     entries = launch_app.list_apps(apps_cfg)
     out = "\n".join(entries) if entries else "No apps are registered in config/apps.yaml."
     _log_event("task_completed", {"task_id": task_id, "result": out[:2000]})
