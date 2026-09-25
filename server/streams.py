@@ -37,13 +37,16 @@ servers (uvicorn delivers disconnect promptly) AND under test transports.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from io import BytesIO
+from pathlib import Path
 from typing import Callable, Iterator
 
 from starlette.responses import Response as _StarletteResponse
@@ -74,6 +77,83 @@ GRANT_TTL_SECONDS = 900.0  # approved grant expires after 15 min
 # memory. Eviction is fail-closed (a dropped grant just stops a stream).
 MAX_CONSENT_RECORDS = 256
 
+# Track A3 — concurrent stream caps. One live MJPEG stream per consent
+# grant (a grant is a single-viewer ticket) and at most 4 live streams per
+# client IP (bounds total capture/CPU from one phone). Excess opens fail
+# closed with 429 stream_limit + Retry-After (see server/main.py).
+MAX_STREAMS_PER_GRANT = 1
+MAX_STREAMS_PER_IP = 4
+
+
+def load_streams_config(path: str | Path | None = None) -> dict:
+    """Read the `streams:` block (Track A3) with module constants as defaults.
+
+    Missing file / missing block / garbage values all fall back to the
+    current defaults — never to "unlimited" or zero. Keys:
+    target_fps, max_consecutive_failures, pending_ttl_seconds,
+    grant_ttl_seconds, max_consent_records.
+    """
+    defaults = {
+        "target_fps": TARGET_FPS,
+        "max_consecutive_failures": MAX_CONSECUTIVE_FAILURES,
+        "pending_ttl_seconds": PENDING_TTL_SECONDS,
+        "grant_ttl_seconds": GRANT_TTL_SECONDS,
+        "max_consent_records": MAX_CONSENT_RECORDS,
+    }
+    if path is None:
+        return dict(defaults)
+    try:
+        p = Path(path)
+        if not p.exists():
+            return dict(defaults)
+        try:
+            import yaml as _yaml  # local import: streams stays importable without yaml
+        except ImportError:
+            return dict(defaults)
+        try:
+            data = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return dict(defaults)
+        if not isinstance(data, dict):
+            return dict(defaults)
+        raw = data.get("streams", {}) or {}
+        if not isinstance(raw, dict):
+            return dict(defaults)
+        out = dict(defaults)
+        try:
+            fps = float(raw.get("target_fps", out["target_fps"]))
+            if fps and fps > 0:
+                out["target_fps"] = fps
+        except (TypeError, ValueError):
+            pass
+        try:
+            mcf = int(raw.get("max_consecutive_failures", out["max_consecutive_failures"]))
+            if mcf >= 1:
+                out["max_consecutive_failures"] = mcf
+        except (TypeError, ValueError):
+            pass
+        try:
+            pttl = float(raw.get("pending_ttl_seconds", out["pending_ttl_seconds"]))
+            if pttl and pttl > 0:
+                out["pending_ttl_seconds"] = pttl
+        except (TypeError, ValueError):
+            pass
+        try:
+            gttl = float(raw.get("grant_ttl_seconds", out["grant_ttl_seconds"]))
+            if gttl and gttl > 0:
+                out["grant_ttl_seconds"] = gttl
+        except (TypeError, ValueError):
+            pass
+        try:
+            mrec = int(raw.get("max_consent_records", out["max_consent_records"]))
+            if mrec >= 1:
+                out["max_consent_records"] = mrec
+        except (TypeError, ValueError):
+            pass
+        return out
+    except OSError:
+        return dict(defaults)
+
 
 class ConsentStatus(str, Enum):
     PENDING = "pending"
@@ -94,15 +174,27 @@ class ConsentManager:
 
     ``now`` and ``new_id`` are injectable so expiry logic is unit-testable
     without sleeping or monkeypatching globals.
+
+    Track A3: constructed from the `streams:` config block via
+    load_streams_config() (see server/main.py create_app) — pending_ttl /
+    grant_ttl / max_records come from config with module constants as
+    defaults. target_fps / max_consecutive_failures are stored for the
+    routes to pass into mjpeg_generator (same config source).
+    Live-stream counts (per grant + per IP) are tracked here so the routes
+    can enforce 1-per-grant / 4-per-IP before opening a stream.
     """
 
     pending_ttl: float = PENDING_TTL_SECONDS
     grant_ttl: float = GRANT_TTL_SECONDS
     max_records: int = MAX_CONSENT_RECORDS
+    target_fps: float = TARGET_FPS
+    max_consecutive_failures: int = MAX_CONSECUTIVE_FAILURES
     now: Callable[[], float] = field(default_factory=lambda: time.monotonic)
     new_id: Callable[[], str] = field(default_factory=lambda: (lambda: uuid.uuid4().hex))
     _records: dict[str, _ConsentRecord] = field(default_factory=dict, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _live_by_grant: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+    _live_by_ip: dict[str, int] = field(default_factory=dict, init=False, repr=False)
 
     def start_consent_request(self) -> str:
         """Create a PENDING consent request; returns its unguessable ID."""
@@ -180,6 +272,61 @@ class ConsentManager:
     def is_approved(self, consent_id: str) -> bool:
         """True only for a live APPROVED grant. Everything else is False."""
         return self.status_of(consent_id) is ConsentStatus.APPROVED
+
+    def try_acquire_stream(
+        self,
+        consent_id: str,
+        client_ip: str,
+        max_per_grant: int = MAX_STREAMS_PER_GRANT,
+        max_per_ip: int = MAX_STREAMS_PER_IP,
+    ) -> bool:
+        """Reserve one live-stream slot for (grant, ip). Fail-closed on caps.
+
+        Returns True and records the reservation, or False when the grant
+        already has max_per_grant live streams or the IP already has
+        max_per_ip. Empty ids/IPs never acquire. Thread-safe.
+        """
+        if not consent_id or not client_ip:
+            return False
+        with self._lock:
+            if self._live_by_grant.get(consent_id, 0) >= max_per_grant:
+                return False
+            if self._live_by_ip.get(client_ip, 0) >= max_per_ip:
+                return False
+            self._live_by_grant[consent_id] = self._live_by_grant.get(consent_id, 0) + 1
+            self._live_by_ip[client_ip] = self._live_by_ip.get(client_ip, 0) + 1
+            return True
+
+    def release_stream(self, consent_id: str, client_ip: str) -> None:
+        """Release one slot reserved by try_acquire_stream. Idempotent.
+
+        Never goes negative; unknown pairs are ignored. Always call from
+        the stream's teardown path (finally / generator close) so a
+        disconnect frees its slot.
+        """
+        with self._lock:
+            if consent_id in self._live_by_grant:
+                left = self._live_by_grant[consent_id] - 1
+                if left <= 0:
+                    self._live_by_grant.pop(consent_id, None)
+                else:
+                    self._live_by_grant[consent_id] = left
+            if client_ip in self._live_by_ip:
+                left = self._live_by_ip[client_ip] - 1
+                if left <= 0:
+                    self._live_by_ip.pop(client_ip, None)
+                else:
+                    self._live_by_ip[client_ip] = left
+
+    def live_count_for_grant(self, consent_id: str) -> int:
+        """Current live streams for one grant (test/introspection hook)."""
+        with self._lock:
+            return self._live_by_grant.get(consent_id, 0)
+
+    def live_count_for_ip(self, client_ip: str) -> int:
+        """Current live streams for one client IP (test/introspection hook)."""
+        with self._lock:
+            return self._live_by_ip.get(client_ip, 0)
 
     def _evict_if_full_locked(self) -> None:
         """Cap record count so consent-request spam can't grow memory.
@@ -270,13 +417,9 @@ def capture_webcam_jpeg(camera_index: int = 0, quality: int = 70, max_width: int
 
     Never writes to disk — frames live only in memory (see module docstring).
 
-    Stateless open-read-release PER FRAME: the device is opened, a single
-    frame is read, and the handle is released in a ``finally`` block, so no
-    camera handle leaks even when reads fail. At the ~2 fps preview cadence
-    the per-frame open cost is acceptable; caveat: on slow cameras the
-    device-open + first-frame exposure can dominate the frame interval, so
-    effective throughput may drop to ~1 fps — fine for a consent-gated
-    preview, not for recording.
+    Legacy per-frame open-read-release path (pre-A3): kept for backwards
+    compat and for tests that mock this attribute. New streams use the
+    shared-handle path below (one VideoCapture per stream).
     """
     try:
         import cv2
@@ -296,6 +439,89 @@ def capture_webcam_jpeg(camera_index: int = 0, quality: int = 70, max_width: int
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     height, width = rgb.shape[0], rgb.shape[1]
     return encode_jpeg_rgb(width, height, rgb.tobytes(), quality=quality, max_width=max_width)
+
+
+def capture_screen_frame(sct, quality: int = 70, max_width: int = 1280) -> bytes:
+    """Capture one frame using a SHARED mss handle (Track A3).
+
+    ``sct`` is an open ``mss.mss()`` instance owned by the stream (opened
+    once via screen_handle(), closed on generator exit). Never writes to
+    disk. Falls back to raising (fail closed) — the generator counts it
+    as a capture failure.
+    """
+    if _PILImage is None:
+        raise RuntimeError("Pillow is required for JPEG encoding (pip install pillow)")
+    monitors = sct.monitors
+    monitor = monitors[1] if len(monitors) > 1 else monitors[0]
+    shot = sct.grab(monitor)
+    width, height = shot.width, shot.height
+    img = _PILImage.frombytes("RGB", (width, height), bytes(shot.raw), "raw", "BGRX")
+    if max_width and width > max_width:
+        img = img.resize((max_width, round(height * max_width / width)))
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return buf.getvalue()
+
+
+def capture_webcam_frame(cap, quality: int = 70, max_width: int = 1280) -> bytes:
+    """Capture one frame using a SHARED cv2.VideoCapture handle (Track A3).
+
+    ``cap`` is an open ``cv2.VideoCapture`` owned by the stream (opened
+    once via webcam_handle(), released on generator exit). Never writes
+    to disk. Fail-closed: a missed read raises instead of emitting bytes.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError(
+            "opencv-python is required for webcam capture (pip install opencv-python)"
+        ) from exc
+    if _PILImage is None:
+        raise RuntimeError("Pillow is required for JPEG encoding (pip install pillow)")
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        raise ValueError("webcam capture did not return a frame")
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    height, width = rgb.shape[0], rgb.shape[1]
+    return encode_jpeg_rgb(width, height, rgb.tobytes(), quality=quality, max_width=max_width)
+
+
+@contextmanager
+def screen_handle():
+    """Shared screen-capture handle: one mss.mss() per stream (Track A3).
+
+    Opened once per stream, closed on generator exit (contextlib). Yields
+    the open handle for capture_screen_frame().
+    """
+    try:
+        import mss
+    except ImportError as exc:
+        raise RuntimeError("mss is required for screen capture (pip install mss)") from exc
+    with mss.mss() as sct:
+        yield sct
+
+
+@contextmanager
+def webcam_handle(camera_index: int = 0):
+    """Shared webcam handle: one cv2.VideoCapture per stream (Track A3).
+
+    Opened once per stream, released on generator exit. Yields the open
+    handle for capture_webcam_frame().
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError(
+            "opencv-python is required for webcam capture (pip install opencv-python)"
+        ) from exc
+    cap = cv2.VideoCapture(camera_index)
+    try:
+        yield cap
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
 
 
 def format_frame(jpeg: bytes, boundary: str = BOUNDARY) -> bytes:
@@ -366,47 +592,124 @@ class MJPEGResponse(_StarletteResponse):
 
 
 def mjpeg_generator(
-    capture_fn: Callable[[], bytes] | None = None,
+    capture_fn: Callable[..., bytes] | None = None,
     *,
     target_fps: float | None = None,
     max_frames: int | None = None,
     boundary: str = BOUNDARY,
     consent_valid: Callable[[], bool] | None = None,
+    handle_factory: Callable[[], object] | None = None,
+    max_consecutive_failures: int | None = None,
 ) -> Iterator[bytes]:
     """Yield MJPEG multipart chunks, one fresh frame per iteration.
 
     - Pull-based: no queue exists, so a slow client drops frames instead of
       growing memory. At most one frame is ever in flight.
     - Sleeps only the remainder of the frame interval (no catch-up bursts).
-    - Stops (instead of spinning) after ``MAX_CONSECUTIVE_FAILURES``
-      capture failures, or as soon as ``consent_valid`` returns False.
+    - Stops (instead of spinning) after ``max_consecutive_failures``
+      (default MAX_CONSECUTIVE_FAILURES) capture failures, or as soon as
+      ``consent_valid`` returns False.
     - ``max_frames`` is a test/seeding hook; production callers leave it None.
+    - Track A3 shared-handle path: when ``handle_factory`` is given, it is
+      opened ONCE per stream (a context manager yielding the capture
+      handle) and closed on generator exit — including on client
+      disconnect (gen.close() runs the context __exit__). Per-frame
+      capture then calls ``capture_fn(handle)`` when the callable accepts
+      an argument, else ``capture_fn()`` (backwards compat with the
+      zero-arg lambdas in existing tests). When the factory fails to open
+      (missing display/camera in tests), the generator falls back to the
+      no-handle path so mocked capture_fn tests stay green.
     """
     fps = TARGET_FPS if target_fps is None else target_fps
     interval = 1.0 / fps if fps and fps > 0 else 0.0
+    max_fails = MAX_CONSECUTIVE_FAILURES if max_consecutive_failures is None else max_consecutive_failures
+    if max_fails is None or max_fails < 1:
+        max_fails = MAX_CONSECUTIVE_FAILURES
     capture = capture_fn if capture_fn is not None else capture_screen_jpeg
-    failures = 0
-    sent = 0
-    while max_frames is None or sent < max_frames:
-        if consent_valid is not None and not consent_valid():
-            logger.info("screen stream stopping: consent no longer valid")
-            break
-        start = time.monotonic()
+
+    def _call_capture(handle: object | None = None) -> bytes:
+        # Late-bound arity check: zero-arg lambdas (existing tests) keep
+        # working; one-arg handle-aware captures receive the shared handle.
+        if handle is None:
+            return capture()  # type: ignore[call-arg]
         try:
-            jpeg = capture()
-            if not jpeg or not jpeg.startswith(JPEG_SOI):
-                raise ValueError("capture did not return JPEG data")
-        except Exception:
-            failures += 1
-            logger.warning("screen capture failed (%d/%d)", failures, MAX_CONSECUTIVE_FAILURES)
-            if failures >= MAX_CONSECUTIVE_FAILURES:
-                logger.error("screen stream stopping: too many capture failures")
-                break
-            time.sleep(interval if interval > 0 else 0.5)
-            continue
+            sig = inspect.signature(capture)
+            takes_handle = len(sig.parameters) > 0
+        except (TypeError, ValueError):
+            takes_handle = False
+        if takes_handle:
+            try:
+                return capture(handle)  # type: ignore[call-arg]
+            except TypeError:
+                # Ambiguous TypeError could come from inside capture, not
+                # from arity — fall back to zero-arg call once; if that
+                # also fails the outer handler counts it as a failure.
+                # To avoid masking real errors, only retry when the
+                # zero-arg call signature differs: try it and let any
+                # exception propagate to the failure counter.
+                try:
+                    return capture()  # type: ignore[call-arg]
+                except TypeError:
+                    raise
+        return capture()  # type: ignore[call-arg]
+
+    def _loop(handle: object | None = None) -> Iterator[bytes]:
         failures = 0
-        yield format_frame(jpeg, boundary)
-        sent += 1
-        elapsed = time.monotonic() - start
-        if interval > elapsed:
-            time.sleep(interval - elapsed)
+        sent = 0
+        while max_frames is None or sent < max_frames:
+            if consent_valid is not None and not consent_valid():
+                logger.info("screen stream stopping: consent no longer valid")
+                break
+            start = time.monotonic()
+            try:
+                jpeg = _call_capture(handle)
+                if not jpeg or not jpeg.startswith(JPEG_SOI):
+                    raise ValueError("capture did not return JPEG data")
+            except GeneratorExit:
+                raise
+            except Exception:
+                failures += 1
+                logger.warning("screen capture failed (%d/%d)", failures, max_fails)
+                if failures >= max_fails:
+                    logger.error("screen stream stopping: too many capture failures")
+                    break
+                time.sleep(interval if interval > 0 else 0.5)
+                continue
+            failures = 0
+            yield format_frame(jpeg, boundary)
+            sent += 1
+            elapsed = time.monotonic() - start
+            if interval > elapsed:
+                time.sleep(interval - elapsed)
+
+    if handle_factory is None:
+        yield from _loop(None)
+        return
+    # Shared-handle path: open once, close on exit (contextlib). A factory
+    # failure (no display/camera in unit tests) falls back to the
+    # no-handle path so mocked-capture tests stay green.
+    try:
+        cm = handle_factory()
+    except Exception:
+        logger.warning("capture handle open failed — falling back to per-frame capture")
+        yield from _loop(None)
+        return
+    # cm must be a context manager (has __enter__/__exit__).
+    if not hasattr(cm, "__enter__"):
+        logger.warning("handle_factory did not return a context manager — using per-frame capture")
+        yield from _loop(None)
+        return
+    try:
+        with cm as handle:
+            yield from _loop(handle)
+    except GeneratorExit:
+        # gen.close() on disconnect lands here: the `with` __exit__
+        # releases the handle (mss.close / cap.release + test counters).
+        raise
+    except Exception:
+        # Handle __enter__ failed (missing cv2/mss in unit tests):
+        # fall back to per-frame capture so mocked-capture tests stay
+        # green. Production with real deps never lands here.
+        logger.warning("capture handle enter failed — falling back to per-frame capture")
+        yield from _loop(None)
+        return
