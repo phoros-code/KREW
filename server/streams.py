@@ -265,6 +265,39 @@ def capture_screen_jpeg(quality: int = 70, max_width: int = 1280) -> bytes:
         return buf.getvalue()
 
 
+def capture_webcam_jpeg(camera_index: int = 0, quality: int = 70, max_width: int = 1280) -> bytes:
+    """Capture one frame from the laptop webcam and return JPEG bytes.
+
+    Never writes to disk — frames live only in memory (see module docstring).
+
+    Stateless open-read-release PER FRAME: the device is opened, a single
+    frame is read, and the handle is released in a ``finally`` block, so no
+    camera handle leaks even when reads fail. At the ~2 fps preview cadence
+    the per-frame open cost is acceptable; caveat: on slow cameras the
+    device-open + first-frame exposure can dominate the frame interval, so
+    effective throughput may drop to ~1 fps — fine for a consent-gated
+    preview, not for recording.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError(
+            "opencv-python is required for webcam capture (pip install opencv-python)"
+        ) from exc
+    if _PILImage is None:
+        raise RuntimeError("Pillow is required for JPEG encoding (pip install pillow)")
+    cap = cv2.VideoCapture(camera_index)
+    try:
+        ret, frame = cap.read()
+    finally:
+        cap.release()
+    if not ret or frame is None:  # fail closed: no frame, no bytes
+        raise ValueError("webcam capture did not return a frame")
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    height, width = rgb.shape[0], rgb.shape[1]
+    return encode_jpeg_rgb(width, height, rgb.tobytes(), quality=quality, max_width=max_width)
+
+
 def format_frame(jpeg: bytes, boundary: str = BOUNDARY) -> bytes:
     """Wrap one JPEG frame as a multipart/x-mixed-replace chunk."""
     header = (
