@@ -33,6 +33,22 @@ when far.
 { "mode": "lan_plus_bluetooth", "rssi_near_threshold": -60 }
 ```
 
+## `POST /proximity/threshold`
+
+**Proximity: near only.** Updates the BLE RSSI near threshold (`dBm`).
+
+Request (strict: must be JSON `int` type — floats, numeric strings, and
+bools are rejected — and satisfy `-100 <= value <= -30`, else `400`):
+```json
+{ "rssi_near_threshold": -65 }
+```
+
+Response (persists to `security.yaml`; subsequent `GET /proximity`
+returns the new value without a restart):
+```json
+{ "mode": "lan_plus_bluetooth", "rssi_near_threshold": -65 }
+```
+
 ## `POST /command`
 
 **Proximity: near only.**
