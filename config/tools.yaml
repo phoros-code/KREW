@@ -22,7 +22,6 @@ shell:
     - "*powershell*Remove-Item*"
 files:
   workspace_root: "~/buddy-workspace"
-  allow_outside_workspace: false
 web_search:
   backend: "duckduckgo"   # or "searxng"
   searxng_url: ""          # required if backend is searxng

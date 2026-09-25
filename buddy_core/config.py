@@ -30,13 +30,6 @@ def _load_yaml(name: str) -> dict[str, Any]:
 
 
 @dataclass
-class WakeConfig:
-    stand_in: str = "alexa"
-    custom_model: str = "voice/models/maxy.onnx"
-    threshold: float = 0.5
-
-
-@dataclass
 class ModelsConfig:
     host: str = "http://localhost:11434"
     dev_model: str = "qwen2.5:3b"
@@ -62,7 +55,6 @@ class ShellConfig:
 @dataclass
 class FilesConfig:
     workspace_root: str = "~/buddy-workspace"
-    allow_outside_workspace: bool = False
 
 
 @dataclass
@@ -126,7 +118,6 @@ def load_tools_config(path: str | Path | None = None) -> ToolsConfig:
         ),
         files=FilesConfig(
             workspace_root=files.get("workspace_root", "~/buddy-workspace"),
-            allow_outside_workspace=bool(files.get("allow_outside_workspace", False)),
         ),
         web_search=WebSearchConfig(
             backend=web.get("backend", "duckduckgo"),
