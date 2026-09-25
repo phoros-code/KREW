@@ -22,11 +22,13 @@ from pathlib import Path
 
 from buddy_core.agents.planner import (
     LAUNCH_VERBS,
+    build_code_plan,
     build_list_apps_plan,
     build_research_plan,
     validate_plan,
     resolve_launch_intent,
 )
+from buddy_core.agents.coder import resolve_code_target as coder_resolve_target
 from buddy_core.config import load_apps_config, load_models_config, load_tools_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -164,6 +166,30 @@ def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits) -> TaskResult:
     return TaskResult(ok=True, output=out, task_id=task_id, steps_taken=1)
 
 
+def _run_code(task_id: str, command: str, rel_path: str, models, tools_cfg, source: str) -> TaskResult:
+    """Coder flow: LLM drafts content → validated write_file plan → executor runs it."""
+    import ollama
+
+    from buddy_core.agents import coder
+    from buddy_core.agents.executor import execute_plan
+
+    try:
+        client = ollama.Client(host=models.host)
+        model = _pick_model(client, models, source=source)
+        content = coder.draft_content(client, model, command, rel_path)
+        plan = build_code_plan(rel_path, content, tools_cfg.agent_limits)
+    except Exception as exc:
+        err = f"{type(exc).__name__}: {exc}"
+        _log_event("task_failed", {"task_id": task_id, "error": err})
+        return TaskResult(ok=False, output=err, task_id=task_id)
+    result = execute_plan(plan, tools_cfg, task_id, _log_event)
+    if result.ok:
+        _log_event("task_completed", {"task_id": task_id, "result": result.output[:2000]})
+        return TaskResult(ok=True, output=f"Saved {rel_path} in the workspace.", task_id=task_id, steps_taken=result.steps_taken + 1)
+    _log_event("task_failed", {"task_id": task_id, "error": result.output})
+    return TaskResult(ok=False, output=result.output, task_id=task_id, steps_taken=result.steps_taken)
+
+
 def run(command: str, task_id: str | None = None, source: str = "text") -> TaskResult:
     """Execute a command end-to-end. Never raises on agent failure — returns TaskResult.
 
@@ -195,6 +221,9 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
             )
         if _is_list_apps(command):
             return _run_list_apps(task_id, apps_cfg, tools_cfg, limits)
+        code_target = coder_resolve_target(command)
+        if code_target:
+            return _run_code(task_id, command, code_target, models, tools_cfg, source)
         plan = build_research_plan(command, limits)
         validate_plan(plan, limits)
     except Exception as exc:
