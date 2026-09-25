@@ -210,3 +210,45 @@ def test_run_list_apps(monkeypatch, tmp_path) -> None:
     assert result.ok
     assert "notepad" in result.output
     assert result.steps_taken == 1
+
+
+class _CodeClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def list(self):
+        return {"models": [{"name": "qwen2.5:3b"}]}
+
+    def chat(self, model, messages, options=None):
+        return {"message": {"content": "print('hi from buddy')"}}
+
+
+def test_run_code_writes_file_in_workspace(monkeypatch, tmp_path) -> None:
+    from buddy_core.config import FilesConfig, ToolsConfig
+
+    monkeypatch.setattr("ollama.Client", _CodeClient)
+    monkeypatch.setattr(orch, "EVENT_LOG", tmp_path / "events.jsonl")
+
+    tools = ToolsConfig()
+    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    monkeypatch.setattr("buddy_core.orchestrator.load_tools_config", lambda: tools)
+
+    result = orch.run("write hello.py that prints hi")
+    assert result.ok
+    assert "Saved hello.py" in result.output
+    assert (tmp_path / "ws" / "hello.py").read_text() == "print('hi from buddy')"
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
+    types = [e["type"] for e in events]
+    assert types[0] == "task_started"
+    assert types[-1] == "task_completed"
+    assert any(e.get("tool") == "write_file" for e in events if e["type"] == "tool_call")
+
+
+def test_run_code_traversal_never_resolves(monkeypatch, tmp_path) -> None:
+    """A traversal filename never becomes a code target — no write attempted."""
+    from buddy_core.agents.coder import resolve_code_target
+
+    assert resolve_code_target("write ../evil.py payload") is None
+    assert resolve_code_target("write C:\\temp\\evil.py payload") is None
+    assert not (tmp_path / "evil.py").exists()
