@@ -341,6 +341,8 @@ class _BuddyAppState extends State<BuddyApp> {
                   PreviewScreen(
                     api: _api,
                     proximity: _proximity.mode,
+                    proximityService: _proximity,
+                    onCalibrated: _refreshProximityConfig,
                   ),
                 ],
               ),
