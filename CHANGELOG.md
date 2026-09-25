@@ -1,5 +1,16 @@
 # Changelog — Everyday Buddy
 
+## Unreleased (post-v0.1.0)
+- **Webcam preview**: consent-gated `GET /webcam` (separate consent scope —
+  screen grants never authorize webcam and vice versa), `capture_webcam_jpeg`
+  via OpenCV (lazy import, fail-closed), approve/deny/revoke mirror, 15
+  server tests incl. cross-scope isolation. App: Screen/Webcam segmented
+  toggle in Screen tab with per-source consent state. `opencv-python>=4.8.0`
+  declared in `pyproject.toml`. +16 dart tests (89 total).
+- **Honest 429 copy**: `ScreenStatus.rateLimited` — throttled preview probes
+  now say "slowing down, wait and retry" instead of "no route"; grant kept
+  for Retry.
+
 ## v0.1.0 (2026-09-26) — Phase 4 completion, code-complete
 
 Phase 0–3 were delivered in earlier sessions (see `CLAUDE.md` session notes).
