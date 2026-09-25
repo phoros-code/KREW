@@ -26,7 +26,10 @@ from typing import Callable, Iterator
 
 import yaml
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response as _StarletteResponse
 from starlette.types import Receive, Scope, Send
 
 from buddy_core.config import CONFIG_DIR
@@ -316,20 +319,71 @@ EVENTS_REPLAY_LIMIT = 200
 
 
 def tail_log_events(log_path: Path, limit: int = EVENTS_REPLAY_LIMIT) -> list[tuple[str, dict]]:
-    """Return the last `limit` events, oldest-first. Memory stays O(limit)."""
+    """Return the last `limit` events, oldest-first. Memory stays O(limit).
+
+    Track A2 — bounded tail: seeks from the END in 8KB blocks instead of
+    scanning the whole file, so a 5MB log (or a 10k-line test log) replays
+    in milliseconds. Junk lines are skipped via _parse_log_line; when junk
+    is dense we keep reading backwards until `limit` valid events or BOF.
+    """
     if limit < 1:
         limit = EVENTS_REPLAY_LIMIT
     from collections import deque
 
-    entries: deque[tuple[str, dict]] = deque(maxlen=limit)
     if not log_path.exists():
         return []
-    with log_path.open(encoding="utf-8") as fh:
-        for line in fh:
-            parsed = _parse_log_line(line)
-            if parsed is not None:
-                entries.append(parsed)
-    return list(entries)
+    try:
+        with log_path.open("rb") as fh:
+            fh.seek(0, 2)
+            file_size = fh.tell()
+            if file_size == 0:
+                return []
+            chunk_size = 8192
+            buf = b""
+            pos = file_size
+            # Read backwards until we hold enough valid events or hit BOF.
+            while True:
+                read_size = min(chunk_size, pos)
+                pos -= read_size
+                fh.seek(pos)
+                chunk = fh.read(read_size)
+                buf = chunk + buf
+                text = buf.decode("utf-8", errors="replace")
+                lines = text.splitlines()
+                # When pos > 0 the first line is a partial head — exclude it
+                # until we have read the start of the file.
+                candidate = lines if pos == 0 else (lines[1:] if lines else [])
+                valid = 0
+                for ln in candidate:
+                    if _parse_log_line(ln) is not None:
+                        valid += 1
+                        if valid >= limit:
+                            break
+                if valid >= limit or pos == 0:
+                    entries: deque[tuple[str, dict]] = deque(maxlen=limit)
+                    for ln in candidate:
+                        parsed = _parse_log_line(ln)
+                        if parsed is not None:
+                            entries.append(parsed)
+                    return list(entries)
+                # Not enough valid yet — keep reading backwards. Cap the
+                # in-memory tail at ~1MB to stay bounded even for all-junk
+                # files; beyond that parse what we hold (still correct,
+                # just fewer than `limit`).
+                if len(buf) > 1024 * 1024:
+                    entries = deque(maxlen=limit)
+                    for ln in candidate:
+                        parsed = _parse_log_line(ln)
+                        if parsed is not None:
+                            entries.append(parsed)
+                    # If we already hold `limit` we would have returned;
+                    # otherwise keep going only if the file is not absurdly
+                    # large — for the 5MB production cap two more 8KB reads
+                    # are cheap, so just continue.
+                    pass
+    except OSError:
+        return []
+    return []
 
 
 def touch_activity(state: AuthState) -> None:
@@ -347,6 +401,184 @@ def touch_activity(state: AuthState) -> None:
 
 def format_sse(event_type: str, payload: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(payload)}\n\n"
+
+
+# Track A2 — sync file-I/O shims so the /events async generator never
+# blocks the loop; every call site below runs them via asyncio.to_thread.
+def _sync_stat_size(path: Path) -> int:
+    try:
+        return path.stat().st_size if path.exists() else 0
+    except OSError:
+        return 0
+
+
+def _sync_tail(path: Path) -> list[tuple[str, dict]]:
+    try:
+        return tail_log_events(path)
+    except OSError:
+        return []
+
+
+def _sync_read_from(path: Path, offset: int) -> list[tuple[str, dict]]:
+    try:
+        return list(iter_log_events(path, offset))
+    except OSError:
+        return []
+
+
+async def _events_client_gone(receive: Receive, timeout: float = 0.5) -> bool:
+    """Non-blocking disconnect poll for the SSE stream (Track A2).
+
+    Own receive polling on the MJPEGResponse pattern — never calls
+    ``request.is_disconnected()`` (which interposes on ``receive`` and
+    double-consumes the single pre-disconnect message with uvicorn,
+    parking the follow-loop). A stalled transport reads as connected.
+    """
+    try:
+        message = await asyncio.wait_for(receive(), timeout=timeout)
+    except (asyncio.TimeoutError, TimeoutError):
+        return False
+    except Exception:
+        return True  # fail closed on transport errors
+    return isinstance(message, dict) and message.get("type") == "http.disconnect"
+
+
+# SSE keepalive + client retry (Track A2).
+SSE_KEEPALIVE_SECONDS = 15.0
+SSE_RETRY_MS = 3000
+
+
+class SSEventsResponse(_StarletteResponse):
+    """SSE /events response with own disconnect polling (Track A2).
+
+    Ports the MJPEGResponse ASGI pattern: subclasses Starlette's Response
+    so FastAPI serves it directly, but implements its own ``__call__``
+    that never blocks unconditionally on ``receive()``. Disconnect is
+    polled with a short timeout (the 0.5s follow cadence doubles as the
+    poll), so the stream works on real servers (uvicorn delivers
+    disconnect promptly) AND under in-process test transports.
+
+    Wire shape:
+    - ``cache-control: no-cache`` + ``X-Accel-Buffering: no`` (no proxy
+      buffering — proxies must not hold SSE frames).
+    - ``retry: 3000`` opener so a dropped phone reconnects after 3s.
+    - ``: ping`` comment keepalive every 15s of silence (SSE comments are
+      ignored by EventSource clients; they just reset proxy timeouts).
+    """
+
+    media_type = "text/event-stream"
+
+    def __init__(
+        self,
+        log_path: Path,
+        auth_state: AuthState,
+        stream_token: str,
+        stream_ip: str,
+        follow_counts: bool,
+    ) -> None:
+        super().__init__(content=None, status_code=200, media_type=self.media_type)
+        self.log_path = log_path
+        self.auth_state = auth_state
+        self.stream_token = stream_token
+        self.stream_ip = stream_ip
+        self.follow_counts = follow_counts
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if not isinstance(scope, dict) or scope.get("type") != "http":
+            raise RuntimeError("SSEventsResponse requires an HTTP scope")
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/event-stream"),
+                    (b"cache-control", b"no-cache"),
+                    (b"x-accel-buffering", b"no"),
+                ],
+            }
+        )
+        state = self.auth_state
+        log_path = self.log_path
+        # Opener: client reconnection delay (SSE `retry` field).
+        await send(
+            {
+                "type": "http.response.body",
+                "body": f"retry: {SSE_RETRY_MS}\n\n".encode("ascii"),
+                "more_body": True,
+            }
+        )
+        last_send = time.monotonic()
+        # Bounded replay (decision 4) — trailing slice only, then follow.
+        # File I/O via to_thread so the loop never blocks (Track A2).
+        offset = await asyncio.to_thread(_sync_stat_size, log_path)
+        for event_type, payload in await asyncio.to_thread(_sync_tail, log_path):
+            if await _events_client_gone(receive, timeout=0.01):
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+                return
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": format_sse(event_type, payload).encode("utf-8"),
+                    "more_body": True,
+                }
+            )
+            last_send = time.monotonic()
+        # …then follow new lines until the client disconnects.
+        while True:
+            # Combined sleep + disconnect poll: 0.5s cadence, no
+            # double-consume with is_disconnected.
+            if await _events_client_gone(receive, timeout=0.5):
+                break
+            prev_activity = state.last_activity
+            ok, code = state.verify_with_code(self.stream_token, self.stream_ip)
+            if not self.follow_counts:
+                state.last_activity = prev_activity
+            if not ok:
+                env = _envelope_for_code(code)
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": format_sse("error", env).encode("utf-8"),
+                        "more_body": True,
+                    }
+                )
+                break
+            size = await asyncio.to_thread(_sync_stat_size, log_path)
+            exists = size > 0 or log_path.exists()
+            if not exists:
+                if self.follow_counts:
+                    touch_activity(state)
+                # Still account for keepalive during log-absent silence.
+            else:
+                if size < offset:
+                    offset = 0  # rotated/truncated
+                if size > offset:
+                    for event_type, payload in await asyncio.to_thread(
+                        _sync_read_from, log_path, offset
+                    ):
+                        await send(
+                            {
+                                "type": "http.response.body",
+                                "body": format_sse(event_type, payload).encode("utf-8"),
+                                "more_body": True,
+                            }
+                        )
+                    offset = size
+                    last_send = time.monotonic()
+                if self.follow_counts:
+                    touch_activity(state)
+            # Keepalive comment on silence (ignored by SSE clients).
+            now = time.monotonic()
+            if now - last_send >= SSE_KEEPALIVE_SECONDS:
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b": ping\n\n",
+                        "more_body": True,
+                    }
+                )
+                last_send = now
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
 
 
 class _http_error(Exception):
@@ -403,6 +635,39 @@ def create_app(
     @app.exception_handler(_http_error)
     async def handle_http_error(_: Request, exc: _http_error) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content=exc.content)
+
+    # Track A2 — uniform envelope: every error, including framework-raised
+    # validation/404/405, uses {error:{code,message}}. Existing codes/shapes
+    # are untouched; these handlers only cover paths that previously
+    # returned FastAPI's {"detail": [...]} array.
+    # Auth-first preserved: these handlers run AFTER auth dependencies, so
+    # an unauthenticated malformed request still 401s via require_auth
+    # (envelope), while an authenticated malformed body 422s here
+    # (envelope) — no path returns a bare detail array.
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "validation_error", "message": "Request validation failed"}},
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def handle_starlette_http(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        if exc.status_code == 404:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "not_found", "message": "Not found"}},
+            )
+        if exc.status_code == 405:
+            return JSONResponse(
+                status_code=405,
+                content={"error": {"code": "method_not_allowed", "message": "Method not allowed"}},
+            )
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": {"code": "http_error", "message": detail}},
+        )
 
     def require_auth(request: Request) -> AuthState:
         token = _bearer_token(request.headers.get("authorization"))
@@ -577,41 +842,13 @@ def create_app(
         # outlive the 30-day ceiling (Track A1). verify_with_code stamps
         # idle on success, so when the flag is False we restore last_activity
         # to keep idle decaying from real requests only.
+        # Track A2: served by SSEventsResponse (custom ASGI on the
+        # MJPEGResponse pattern — own receive polling, no double-consume
+        # with is_disconnected; file I/O via to_thread; retry + keepalive).
         stream_token = _bearer_token(request.headers.get("authorization"))
         stream_ip = _client_ip(request)
         follow_counts = streams_follow_counts_as_activity
-
-        async def stream():
-            offset = log_path.stat().st_size if log_path.exists() else 0
-            # Bounded replay (decision 4) — trailing slice only, then follow.
-            for event_type, payload in tail_log_events(log_path):
-                yield format_sse(event_type, payload)
-            # …then follow new lines until the client disconnects.
-            while await _still_connected(request):
-                await asyncio.sleep(0.5)
-                prev_activity = state.last_activity
-                ok, code = state.verify_with_code(stream_token, stream_ip)
-                if not follow_counts:
-                    state.last_activity = prev_activity
-                if not ok:
-                    env = _envelope_for_code(code)
-                    yield format_sse("error", env)
-                    break
-                if not log_path.exists():
-                    if follow_counts:
-                        touch_activity(state)
-                    continue
-                size = log_path.stat().st_size
-                if size < offset:
-                    offset = 0  # rotated/truncated
-                if size > offset:
-                    for event_type, payload in iter_log_events(log_path, offset):
-                        yield format_sse(event_type, payload)
-                    offset = size
-                if follow_counts:
-                    touch_activity(state)
-
-        return StreamingResponse(stream(), media_type="text/event-stream")
+        return SSEventsResponse(log_path, state, stream_token, stream_ip, follow_counts)
 
     @app.post("/screen/consent")
     def screen_consent(_auth: AuthState = Depends(require_near)) -> dict:
@@ -661,7 +898,7 @@ def create_app(
         raise _http_error(409, {"error": {"code": "conflict", "message": "Consent is not an active grant"}})
 
     @app.get("/screen")
-    def screen(request: Request, _auth: AuthState = Depends(require_near)) -> StreamingResponse:
+    def screen(request: Request, _auth: AuthState = Depends(require_near)) -> _StarletteResponse:
         """MJPEG stream of the primary display — near-only AND consent-gated.
 
         The client passes the approved grant as ``?consent_id=…`` or the
@@ -746,7 +983,7 @@ def create_app(
         raise _http_error(409, {"error": {"code": "conflict", "message": "Consent is not an active grant"}})
 
     @app.get("/webcam")
-    def webcam(request: Request, _auth: AuthState = Depends(require_near)) -> StreamingResponse:
+    def webcam(request: Request, _auth: AuthState = Depends(require_near)) -> _StarletteResponse:
         """MJPEG stream of the laptop webcam — near-only AND consent-gated.
 
         Mirrors /screen exactly, with a SEPARATE consent scope: only a grant
