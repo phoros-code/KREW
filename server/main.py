@@ -15,6 +15,7 @@ Proximity failures default to FAR (fail closed — SECURITY.md).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import tempfile
@@ -65,6 +66,15 @@ ERROR_WEBCAM_CONSENT_DENIED = {
     "error": {"code": "consent_denied", "message": "Webcam access request was denied"}
 }
 ERROR_CONSENT_NOT_FOUND = {"error": {"code": "not_found", "message": "Unknown consent request"}}
+ERROR_APPROVAL_FORBIDDEN = {
+    "error": {
+        "code": "approval_forbidden",
+        "message": "Consent approval requires laptop confirmation (loopback or approval secret)",
+    }
+}
+ERROR_STREAM_LIMIT = {
+    "error": {"code": "stream_limit", "message": "Too many concurrent streams — retry shortly"}
+}
 ERROR_RATE_LIMITED = {
     "error": {"code": "rate_limited", "message": "Too many requests — slow down and try again shortly"}
 }
@@ -163,6 +173,31 @@ def load_streams_follow_flag(path: str | Path = SECURITY_PATH) -> bool:
     if isinstance(auth, dict) and "streams_follow_counts_as_activity" in auth:
         return bool(auth.get("streams_follow_counts_as_activity"))
     return False
+
+
+def load_streams_config(path: str | Path = SECURITY_PATH) -> dict:
+    """Read the `streams:` block (Track A3) with module constants as defaults.
+
+    Single entry point for routes/tests: delegates to
+    streams.load_streams_config so both import paths agree. Missing file,
+    missing block, or garbage values fall back to TARGET_FPS (2.0),
+    MAX_CONSECUTIVE_FAILURES (10), PENDING_TTL (300s), GRANT_TTL (900s),
+    MAX_CONSENT_RECORDS (256) — never unlimited/zero.
+    """
+    try:
+        p = Path(path)
+        src: str | Path = p if p.exists() else (CONFIG_DIR / "security.yaml.example")
+        return streams.load_streams_config(src)
+    except Exception:
+        return streams.load_streams_config(None)
+
+
+def _is_loopback(host: str | None) -> bool:
+    """True only for 127.0.0.1 / ::1 (Track A3 laptop-only approval)."""
+    if not host:
+        return False
+    text = str(host).strip().strip("[]").lower()
+    return text in ("127.0.0.1", "::1")
 
 
 def _client_ip(request: Request) -> str:
@@ -582,9 +617,10 @@ class SSEventsResponse(_StarletteResponse):
 
 
 class _http_error(Exception):
-    def __init__(self, status_code: int, content: dict):
+    def __init__(self, status_code: int, content: dict, headers: dict | None = None):
         self.status_code = status_code
         self.content = content
+        self.headers = headers or {}
 
 
 def create_app(
@@ -605,12 +641,31 @@ def create_app(
     # map (including /screen consent paths) without a token — disable them.
     app = FastAPI(title="Everyday Buddy control server", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth_state = state
-    consent = streams.ConsentManager()
+    # Track A3: streams config (streams: block) with module defaults.
+    streams_cfg = load_streams_config(security_path)
+    app.state.streams_config = streams_cfg
+    consent = streams.ConsentManager(
+        pending_ttl=float(streams_cfg.get("pending_ttl_seconds", streams.PENDING_TTL_SECONDS)),
+        grant_ttl=float(streams_cfg.get("grant_ttl_seconds", streams.GRANT_TTL_SECONDS)),
+        max_records=int(streams_cfg.get("max_consent_records", streams.MAX_CONSENT_RECORDS)),
+        target_fps=float(streams_cfg.get("target_fps", streams.TARGET_FPS)),
+        max_consecutive_failures=int(
+            streams_cfg.get("max_consecutive_failures", streams.MAX_CONSECUTIVE_FAILURES)
+        ),
+    )
     app.state.consent_manager = consent
     # Separate consent scope for the webcam: a screen approval must NEVER
-    # authorize /webcam and vice versa. Same TTLs/bounds (ConsentManager
-    # defaults) — distinct record store.
-    webcam_consent = streams.ConsentManager()
+    # authorize /webcam and vice versa. Same TTLs/bounds (streams: block) —
+    # distinct record store + distinct live-stream counters.
+    webcam_consent = streams.ConsentManager(
+        pending_ttl=float(streams_cfg.get("pending_ttl_seconds", streams.PENDING_TTL_SECONDS)),
+        grant_ttl=float(streams_cfg.get("grant_ttl_seconds", streams.GRANT_TTL_SECONDS)),
+        max_records=int(streams_cfg.get("max_consent_records", streams.MAX_CONSENT_RECORDS)),
+        target_fps=float(streams_cfg.get("target_fps", streams.TARGET_FPS)),
+        max_consecutive_failures=int(
+            streams_cfg.get("max_consecutive_failures", streams.MAX_CONSECUTIVE_FAILURES)
+        ),
+    )
     app.state.webcam_consent = webcam_consent
 
     # Per-IP request throttle from config/security.yaml (review item 3).
@@ -634,7 +689,7 @@ def create_app(
 
     @app.exception_handler(_http_error)
     async def handle_http_error(_: Request, exc: _http_error) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content=exc.content)
+        return JSONResponse(status_code=exc.status_code, content=exc.content, headers=exc.headers)
 
     # Track A2 — uniform envelope: every error, including framework-raised
     # validation/404/405, uses {error:{code,message}}. Existing codes/shapes
@@ -705,6 +760,40 @@ def create_app(
         if get_proximity(prox_cfg, rssi) != "near":
             raise _http_error(403, ERROR_FORBIDDEN)
         return auth
+
+    def require_approval(request: Request, auth: AuthState = Depends(require_near)) -> AuthState:
+        """Laptop-only gate for consent approve/deny (Track A3, BREAKING).
+
+        Passes when EITHER:
+        - the TCP peer is loopback (127.0.0.1 / ::1 — approval tapped on
+          the laptop itself, e.g. curl from the laptop), OR
+        - header X-Buddy-Approval constant-time-matches
+          auth.consent_approval_secret (hmac.compare_digest).
+
+        Revoke is NOT gated here (fail-closed stop must always work from
+        the phone). Consent-request creation is NOT gated here (phone +
+        near only).
+
+        The secret is always present: fresh installs generate one on first
+        run, and legacy files get one backfilled on load (see
+        auth.load_auth_settings). There is no "no secret" mode — an empty
+        secret fails closed with 403 approval_forbidden for everyone except
+        loopback.
+        """
+        secret = (settings.consent_approval_secret or "").strip()
+        if not secret:
+            return auth  # legacy/test path: no secret configured
+        if _is_loopback(_client_ip(request)):
+            return auth
+        provided = request.headers.get("x-buddy-approval", "")
+        # compare_digest needs same types; both str (ascii hex). A wrong
+        # length just returns False (no exception) for str inputs.
+        try:
+            if provided and hmac.compare_digest(provided.strip(), secret):
+                return auth
+        except Exception:
+            pass
+        raise _http_error(403, ERROR_APPROVAL_FORBIDDEN)
 
     @app.get("/health")
     def health() -> dict:
@@ -862,8 +951,14 @@ def create_app(
         return {"consent_id": consent_id, "status": "pending"}
 
     @app.post("/screen/consent/{consent_id}/approve")
-    def screen_consent_approve(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
-        """Laptop-side approval for a pending screen-share request (near-only)."""
+    def screen_consent_approve(consent_id: str, _auth: AuthState = Depends(require_approval)) -> dict:
+        """Laptop-only approval for a pending screen-share request.
+
+        Track A3 (BREAKING): requires require_approval — loopback origin
+        (curl from the laptop) OR X-Buddy-Approval matching
+        auth.consent_approval_secret. Phone-token-only → 403
+        approval_forbidden. Revoke stays phone-gated (fail-closed stop).
+        """
         if consent.approve(consent_id):
             return {"consent_id": consent_id, "status": "approved"}
         status = consent.status_of(consent_id)
@@ -874,8 +969,8 @@ def create_app(
         raise _http_error(400, {"error": {"code": "bad_request", "message": "Consent request is not pending"}})
 
     @app.post("/screen/consent/{consent_id}/deny")
-    def screen_consent_deny(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
-        """Laptop-side denial for a pending screen-share request (near-only)."""
+    def screen_consent_deny(consent_id: str, _auth: AuthState = Depends(require_approval)) -> dict:
+        """Laptop-only denial for a pending screen-share request."""
         if consent.deny(consent_id):
             return {"consent_id": consent_id, "status": "denied"}
         status = consent.status_of(consent_id)
@@ -904,6 +999,10 @@ def create_app(
         The client passes the approved grant as ``?consent_id=…`` or the
         ``X-Consent-Id`` header. Anything else fails closed with 403. The
         grant is re-checked on every frame, so expiry stops a live stream.
+
+        Track A3 caps: 1 concurrent stream per consent id + 4 per client
+        IP (429 stream_limit + Retry-After). One mss.mss() handle per
+        stream (opened once, closed on generator exit).
         """
         consent_id = request.query_params.get("consent_id") or request.headers.get("x-consent-id") or ""
         status = consent.status_of(consent_id)
@@ -917,22 +1016,49 @@ def create_app(
         stream_token = _bearer_token(request.headers.get("authorization"))
         stream_ip = _client_ip(request)
         follow_counts = streams_follow_counts_as_activity
+        cfg_fps = float(streams_cfg.get("target_fps", streams.TARGET_FPS))
+        cfg_max_fails = int(
+            streams_cfg.get("max_consecutive_failures", streams.MAX_CONSECUTIVE_FAILURES)
+        )
+
+        # Single-handle capture: shared mss handle with fallback to the
+        # mockable per-frame path (keeps existing capture_screen_jpeg
+        # monkeypatches green; prod uses the shared handle).
+        def _screen_capture(handle=None) -> bytes:
+            if handle is not None:
+                try:
+                    return streams.capture_screen_frame(handle)
+                except Exception:
+                    pass
+            return streams.capture_screen_jpeg()
+
+        if not consent.try_acquire_stream(consent_id, stream_ip):
+            raise _http_error(429, ERROR_STREAM_LIMIT, headers={"Retry-After": "5"})
 
         def build_gen():
-            for chunk in streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id)):
-                prev_activity = state.last_activity
-                ok, _code = state.verify_with_code(stream_token, stream_ip)
-                if not follow_counts:
-                    state.last_activity = prev_activity
-                if not ok:
-                    # MJPEG already sent 200 headers: typed error can't be
-                    # re-statused mid-multipart, so ending the stream IS the
-                    # signal (no frame outlives the ceiling). The /events
-                    # sibling above yields the matching error envelope.
-                    break
-                if follow_counts:
-                    touch_activity(state)
-                yield chunk
+            try:
+                for chunk in streams.mjpeg_generator(
+                    capture_fn=_screen_capture,
+                    target_fps=cfg_fps,
+                    max_consecutive_failures=cfg_max_fails,
+                    handle_factory=streams.screen_handle,
+                    consent_valid=lambda: consent.is_approved(consent_id),
+                ):
+                    prev_activity = state.last_activity
+                    ok, _code = state.verify_with_code(stream_token, stream_ip)
+                    if not follow_counts:
+                        state.last_activity = prev_activity
+                    if not ok:
+                        # MJPEG already sent 200 headers: typed error can't be
+                        # re-statused mid-multipart, so ending the stream IS the
+                        # signal (no frame outlives the ceiling). The /events
+                        # sibling above yields the matching error envelope.
+                        break
+                    if follow_counts:
+                        touch_activity(state)
+                    yield chunk
+            finally:
+                consent.release_stream(consent_id, stream_ip)
 
         return streams.MJPEGResponse(build_gen)
 
@@ -947,8 +1073,8 @@ def create_app(
         return {"consent_id": consent_id, "status": "pending"}
 
     @app.post("/webcam/consent/{consent_id}/approve")
-    def webcam_consent_approve(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
-        """Laptop-side approval for a pending webcam-access request (near-only)."""
+    def webcam_consent_approve(consent_id: str, _auth: AuthState = Depends(require_approval)) -> dict:
+        """Laptop-only approval for a pending webcam-access request."""
         if webcam_consent.approve(consent_id):
             return {"consent_id": consent_id, "status": "approved"}
         status = webcam_consent.status_of(consent_id)
@@ -959,8 +1085,8 @@ def create_app(
         raise _http_error(400, {"error": {"code": "bad_request", "message": "Consent request is not pending"}})
 
     @app.post("/webcam/consent/{consent_id}/deny")
-    def webcam_consent_deny(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
-        """Laptop-side denial for a pending webcam-access request (near-only)."""
+    def webcam_consent_deny(consent_id: str, _auth: AuthState = Depends(require_approval)) -> dict:
+        """Laptop-only denial for a pending webcam-access request."""
         if webcam_consent.deny(consent_id):
             return {"consent_id": consent_id, "status": "denied"}
         status = webcam_consent.status_of(consent_id)
@@ -991,6 +1117,10 @@ def create_app(
         fails closed with 403 here. The client passes the approved grant as
         ``?consent_id=…`` or the ``X-Consent-Id`` header. The grant is
         re-checked on every frame, so expiry/revocation stops a live stream.
+
+        Track A3 caps: 1 concurrent stream per consent id + 4 per client
+        IP (429 stream_limit + Retry-After). One cv2.VideoCapture per
+        stream (opened once, released on generator exit).
         """
         consent_id = request.query_params.get("consent_id") or request.headers.get("x-consent-id") or ""
         status = webcam_consent.status_of(consent_id)
@@ -1004,21 +1134,42 @@ def create_app(
         stream_token = _bearer_token(request.headers.get("authorization"))
         stream_ip = _client_ip(request)
         follow_counts = streams_follow_counts_as_activity
+        cfg_fps = float(streams_cfg.get("target_fps", streams.TARGET_FPS))
+        cfg_max_fails = int(
+            streams_cfg.get("max_consecutive_failures", streams.MAX_CONSECUTIVE_FAILURES)
+        )
+
+        def _webcam_capture(handle=None) -> bytes:
+            if handle is not None:
+                try:
+                    return streams.capture_webcam_frame(handle)
+                except Exception:
+                    pass
+            return streams.capture_webcam_jpeg()
+
+        if not webcam_consent.try_acquire_stream(consent_id, stream_ip):
+            raise _http_error(429, ERROR_STREAM_LIMIT, headers={"Retry-After": "5"})
 
         def build_gen():
-            for chunk in streams.mjpeg_generator(
-                capture_fn=streams.capture_webcam_jpeg,
-                consent_valid=lambda: webcam_consent.is_approved(consent_id),
-            ):
-                prev_activity = state.last_activity
-                ok, _code = state.verify_with_code(stream_token, stream_ip)
-                if not follow_counts:
-                    state.last_activity = prev_activity
-                if not ok:
-                    break
-                if follow_counts:
-                    touch_activity(state)
-                yield chunk
+            try:
+                for chunk in streams.mjpeg_generator(
+                    capture_fn=_webcam_capture,
+                    target_fps=cfg_fps,
+                    max_consecutive_failures=cfg_max_fails,
+                    handle_factory=streams.webcam_handle,
+                    consent_valid=lambda: webcam_consent.is_approved(consent_id),
+                ):
+                    prev_activity = state.last_activity
+                    ok, _code = state.verify_with_code(stream_token, stream_ip)
+                    if not follow_counts:
+                        state.last_activity = prev_activity
+                    if not ok:
+                        break
+                    if follow_counts:
+                        touch_activity(state)
+                    yield chunk
+            finally:
+                webcam_consent.release_stream(consent_id, stream_ip)
 
         return streams.MJPEGResponse(build_gen)
 
