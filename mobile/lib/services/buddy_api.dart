@@ -242,6 +242,17 @@ class BuddyApi {
     'Authorization': 'Bearer $_token',
   };
 
+  /// Public auth headers for transports BuddyApi does not own — the MJPEG
+  /// player builds its own pinned GET and must still send the Bearer token.
+  /// [_authHeaders] stays the single definition; this copies it.
+  Map<String, String> get authHeaders => <String, String>{..._authHeaders};
+
+  /// `https://<host>:8443/screen?consent_id=<id>` — the query-param form is
+  /// preferred (API.md also accepts the X-Consent-Id header; the preview
+  /// sends both). Never logged: the query carries the live grant.
+  Uri screenStreamUrl(String consentId) =>
+      _uri('/screen').replace(queryParameters: <String, String>{'consent_id': consentId});
+
   /// Unauthenticated liveness check — reveals nothing sensitive (API.md).
   Future<void> checkHealth() async {
     try {
@@ -507,6 +518,46 @@ class BuddyApi {
       code: 'bad_response',
       message: 'The laptop sent a consent reply the app could not read.',
     );
+  }
+
+  /// POST /screen/consent/{id}/revoke — pull back a live grant early.
+  ///
+  /// Same transport mapping as [requestScreenConsent]: unreachable/TLS
+  /// failures become [routeError]/[tlsError], any non-200 becomes the typed
+  /// server envelope via [BuddyApiException.fromRaw] (404 unknown/expired,
+  /// 409 not-an-active-grant). Callers stopping a preview ignore 404/409 —
+  /// the grant is already gone — and still reset local state.
+  Future<void> revokeScreenConsent(String consentId) async {
+    if (consentId.isEmpty) {
+      throw const BuddyApiException(
+        code: 'bad_request',
+        message: 'There is no preview grant to stop.',
+      );
+    }
+    http.Response resp;
+    try {
+      resp = await _client
+          .post(
+            _uri('/screen/consent/${Uri.encodeComponent(consentId)}/revoke'),
+            headers: _authHeaders,
+          )
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
+    } on http.ClientException {
+      throw routeError;
+    }
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
+    }
   }
 
   /// Probe /screen status without starting a stream. Never auto-starts on
