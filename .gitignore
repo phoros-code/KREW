@@ -27,7 +27,10 @@ logs/*.log
 buddy-workspace/
 
 # Local model binaries (downloaded per TESTING.md / HARDWARE_VERIFICATION.md)
-voice/models/
+# NOTE: directory contents ignored, but voice/models/README.md (training
+# procedure doc, Sprint 2.1) IS versioned — parent uses /* so the negation works.
+voice/models/*
+!voice/models/README.md
 *.onnx
 *.onnx.json
 
