@@ -354,4 +354,109 @@ void main() {
       api.close();
     });
   });
+
+  group('BuddyApi screen revoke + stream URL (Sprint 1)', () {
+    BuddyApi apiWith(MockClient client) =>
+        BuddyApi(host: '192.168.1.10', token: 't', client: client);
+
+    test('revokeScreenConsent posts the revoke path and returns on 200',
+        () async {
+      String? seenPath;
+      String? seenMethod;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenPath = req.url.path;
+          seenMethod = req.method;
+          return http.Response(
+            '{"consent_id": "abc", "status": "revoked"}',
+            200,
+          );
+        }),
+      );
+      await api.revokeScreenConsent('abc');
+      expect(seenMethod, 'POST');
+      expect(seenPath, '/screen/consent/abc/revoke');
+      api.close();
+    });
+
+    test('revokeScreenConsent throws the typed envelope on 404', () async {
+      final api = apiWith(
+        MockClient((_) async => http.Response(
+          '{"error": {"code": "not_found", "message": "Unknown consent"}}',
+          404,
+        )),
+      );
+      expect(
+        api.revokeScreenConsent('gone'),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'not_found')
+              .having((e) => e.statusCode, 'statusCode', 404),
+        ),
+      );
+      api.close();
+    });
+
+    test('revokeScreenConsent maps transport failure to unreachable', () {
+      final api = BuddyApi(
+        host: '192.168.1.10',
+        token: 't',
+        client: MockClient((_) async => throw const SocketException('refused')),
+      );
+      expect(
+        api.revokeScreenConsent('abc'),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'unreachable'),
+        ),
+      );
+      api.close();
+    });
+
+    test('revokeScreenConsent rejects an empty grant without network',
+        () async {
+      bool hitNetwork = false;
+      final api = apiWith(
+        MockClient((_) async {
+          hitNetwork = true;
+          return http.Response('{}', 200);
+        }),
+      );
+      expect(
+        api.revokeScreenConsent(''),
+        throwsA(
+          isA<BuddyApiException>()
+              .having((e) => e.code, 'code', 'bad_request'),
+        ),
+      );
+      expect(hitNetwork, isFalse);
+      api.close();
+    });
+
+    test('screenStreamUrl carries the grant as consent_id query', () {
+      final api = apiWith(MockClient((_) async => http.Response('', 200)));
+      final Uri url = api.screenStreamUrl('abc123');
+      expect(url.scheme, 'https');
+      expect(url.path, '/screen');
+      expect(url.queryParameters['consent_id'], 'abc123');
+      api.close();
+    });
+
+    test('authHeaders carries the bearer token the player sends', () async {
+      String? seenAuth;
+      final api = apiWith(
+        MockClient((http.BaseRequest req) async {
+          seenAuth = req.headers['Authorization'];
+          return http.Response(
+            '{"consent_id": "x", "status": "pending"}',
+            200,
+          );
+        }),
+      );
+      expect(api.authHeaders['Authorization'], 'Bearer t');
+      await api.requestScreenConsent();
+      expect(seenAuth, 'Bearer t');
+      api.close();
+    });
+  });
 }
