@@ -40,7 +40,8 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - [x] Phase 1 — Voice loop (code done 2026-09-19: wake/stt/tts/voice_loop + 7 loop tests; hardware verification pending — mic + `pip install -e .[voice]` + Piper model download + live out-loud demo)
 - [x] Phase 2 — Control server (code done 2026-09-19: token auth + lockout/idle/rotation, /command /events /health, proximity fail-closed, JSONL events, TLS gen_cert + serve + pair_device scripts; HTTPS verified locally via curl — /health ok, /command queued, unauth 401; phone-on-LAN check pending)
 - [x] Phase 3 — Mobile app MVP (code done 2026-09-20: Flutter pairing/chat/tasks/preview per DESIGN.md + server /screen MJPEG with consent flow; 75 tests pass in ~2s incl. real-socket stream test; SDK verification pending — Flutter winget install retrying, then `flutter analyze/test/run`)
-- [ ] Phase 4 — Proximity & polish
+- [x] Phase 4 — Proximity & polish (code done 2026-09-26: BLE reader + GET /proximity, SnackBar notifications, hardening + rate limit + replay cap, voice-vs-text routing, SHA-256 pinning, POST /proximity/threshold + CalibrateScreen, authenticated MjpegPlayer with revoke-first stop, maxy wake wiring with alexa stand-in; 164 pytest + 73 dart pass, both analyzes clean; security review PASS with no fixes)
+- [ ] v0.1.0 hardware gates — user-confirmed done: voice demo (§1), phone-on-LAN HTTPS (§2). Still human-only: BLE calibration walk (§3), TLS rejection (§4), in-app consent stream (§5).
 
 ## Session notes (2026-09-20)
 
@@ -101,3 +102,15 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Models: `qwen2.5-coder:7b` present; `qwen2.5:3b` + `llama3.1:8b` pulling in background. Orchestrator auto-falls-back to any pulled model (`_pick_model` handles dict- and object-style `ollama.Client.list()`).
 - Next: Phase 1 voice (openWakeWord + faster-whisper + Piper) — needs mic + `pip install -e .[voice]` (prefer venv312).
 - Blocked: none. Deferred: CrewAI swap (orchestrator boundary is CrewAI-ready via typed plans), webcam endpoint (optional per API.md).
+
+## Session notes (2026-09-26, Phase 4 completion sprint)
+
+- Standing user rules (keep in memory every session): (1) voice demo (§1) + phone-on-LAN HTTPS (§2) confirmed DONE — never re-list as remaining; (2) maximum git commits — one commit per logical change, `phase4: <area> - <change>` style; (3) use `.opencode/agents/` specialists via Task subagents whenever a task matches (mobile/backend/voice/security/testing).
+- Committed 5 pending coder/executor slices first (planner build_code_plan, coder, executor, orchestrator wiring, tests — 24 tests green).
+- Sprint 1 (Mobile App Builder subagent): `mjpeg_stream: ^1.0.0` (resolved 1.0.1); real widget is `MJPEGStreamScreen` with no headers/client/error-callback, so `MjpegPlayer` owns the pinned stream and reuses `MjpegPreprocessor` for SOI→EOI validation; ready-phase renders player, revoke-first Stop (404/409 tolerated), mid-stream re-probe via checkScreen. 68 dart green, analyze clean.
+- Sprint 2 backend (Backend Architect subagent): `POST /proximity/threshold` (require_near, strict-int, -100..-30, atomic 0600 write, in-mem prox_cfg mutate) + 4 tests + API.md/SECURITY.md notes. 159 pytest green.
+- Sprint 2 voice (Voice AI Integration Engineer subagent): maxy wiring (resolve_wake_models, WakeConfig, models.yaml wake section, training README + stub script — NO fake .onnx), openWakeWord Model() takes local .onnx paths with auto-onnx framework. 13 voice tests green. NOTE: "maxy" has no community model — custom training needs 50-100 clips (user to provide).
+- Sprint 2.3c (Mobile App Builder): `setProximityThreshold` + CalibrateScreen (live RSSI, slider/stepper, walk-test guide, distance log) embedded in Screen tab below preview; onCalibrated re-fetches config. 73 dart green.
+- Sprint 3 (Security Architect subagent): HUMAN REVIEW PASS with no fixes — threshold auth/validation/persistence, revoke fail-closed, pinning, proximity fail-closed, throttle blind to X-RSSI, consent TTLs/bounds, error envelopes, mobile human error states all verified. pip-audit: 4 findings all in chromadb 1.1.1 (CrewAI transitive, no fixed versions, NOT reachable from phone surface) — report-only. 164 pytest + 73 dart + both analyzes clean.
+- Report-only notes for human: (a) badCertificateCallback bypassable by public-CA cert (unexploitable on RFC1918 LAN); (b) checkScreen maps 429 to unreachable copy (misleading text, fail-closed); (c) non-dict JSON body falls to FastAPI 422 (pre-existing, auth-first).
+- Next: §3 BLE walk, §4 TLS rejection, §5 in-app consent stream — all need physical devices. Then tag v0.1.0.
