@@ -35,23 +35,23 @@
 
 Repo: `pip install -e .[voice]` provides `openwakeword`, `faster-whisper`, `piper-tts` (+ `pyaudio` for the mic). Default voice per `voice/tts.py` is `en_US-lessac-medium`.
 
-- [ ] 1.1 Install voice extras (prefer `venv312`), from the repo root:
+- [x] 1.1 Install voice extras (user-confirmed done 2026-09-26) (prefer `venv312`), from the repo root:
   `.\venv312\Scripts\python.exe -m pip install -e .[voice]`
   PASS: pip completes with no errors; `.\venv312\Scripts\python.exe -c "import openwakeword, faster_whisper, piper, pyaudio; print('voice deps ok')"` prints `voice deps ok`. **[UNVERIFIED — not in repo]**: the exact import names for the smoke check; if one name fails, re-run pip and continue — the procedure below is the real test.
-- [ ] 1.2 Download the repo's default Piper voice into `voice\models\` (both files, side by side):
+- [x] 1.2 Download the repo's default Piper voice (user-confirmed done 2026-09-26) into `voice\models\` (both files, side by side):
   `New-Item -ItemType Directory -Path voice\models -Force | Out-Null;`
   `Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" -OutFile "voice\models\en_US-lessac-medium.onnx";`
   `Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" -OutFile "voice\models\en_US-lessac-medium.onnx.json";`
   `Get-ChildItem voice\models\en_US-lessac-medium.onnx*`
   PASS: both files exist and are non-empty (tens of MB `.onnx` + small `.json`). **[UNVERIFIED — not in repo]**: the `.onnx.json` URL is inferred (repo comment gives only the `.onnx` URL plus "the matching .onnx.json config beside it"); if the second download 404s, open the folder page `https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/lessac/medium` in a browser and download the matching `.onnx.json` by hand.
-- [ ] 1.3 Mic check. **[UNVERIFIED — not in repo]**: the repo has no mic-check command — this step is OS procedure only. Windows Settings → System → Sound → Input: confirm your microphone appears and the input-level bar moves when you speak. Then in PowerShell:
+- [x] 1.3 Mic check. (user-confirmed done 2026-09-26) **[UNVERIFIED — not in repo]**: the repo has no mic-check command — this step is OS procedure only. Windows Settings → System → Sound → Input: confirm your microphone appears and the input-level bar moves when you speak. Then in PowerShell:
   `.\venv312\Scripts\python.exe -c "import pyaudio; a=pyaudio.PyAudio(); print('inputs:', [a.get_device_info_by_index(i)['name'] for i in range(a.get_device_count()) if a.get_device_info_by_index(i)['maxInputChannels']>0]); a.terminate()"`
   PASS: at least one input device name prints. If the list is empty, fix Windows mic privacy (Settings → Privacy → Microphone → allow desktop apps) and retry.
-- [ ] 1.4 Wake-word test:
+- [x] 1.4 Wake-word test: (user-confirmed done 2026-09-26)
   `.\venv312\Scripts\python.exe -m voice.wake`
   Say the wake word out loud (the cue the code listens for is `hey_buddy` — say "hey buddy" clearly toward the mic, normal room, ~1 m distance).
   PASS: terminal prints `WAKE DETECTED` within the 120 s window and exits 0. FAIL = `timed out, no wake word heard` (exit 1): move closer, reduce background noise/TV, confirm the mic from 1.3 is the Windows default, retry.
-- [ ] 1.5 Full loop test (needs Ollama from prerequisite 0.3 + speakers on):
+- [x] 1.5 Full loop test (needs Ollama from prerequisite 0.3 + speakers on): (user-confirmed done 2026-09-26)
   `.\venv312\Scripts\python.exe -m voice.voice_loop` **[UNVERIFIED — not in repo]**: the exact `-m voice.voice_loop` invocation is implied by `voice/voice_loop.py:main()` ("Run the always-on loop"), not spelled out in the repo.
   Flow: say "hey buddy", wait for the record window (6 s per `RECORD_SECONDS`), speak one command (e.g. "what time is it"), then listen.
   PASS (what "pass" sounds like): you HEAR a spoken reply through the speakers (a real answer, or the designed fallbacks `Sorry, I didn't catch that.` / `Sorry, something went wrong handling that.`), AND the terminal prints `buddy: <reply text>`. A fallback reply still PASSES the audio path (mic→STT→orchestrator→TTS→speakers); silence, a traceback, or a hang FAILS. Ctrl+C stops the loop.
@@ -60,19 +60,19 @@ Repo: `pip install -e .[voice]` provides `openwakeword`, `faster-whisper`, `pipe
 
 ## 2. Phone-on-LAN HTTPS check (`/health` from the phone browser)
 
-- [ ] 2.1 Start the server (TLS, LAN-bound) from the repo root:
+- [x] 2.1 Start the server (TLS, LAN-bound) from the repo root: (user-confirmed done 2026-09-26)
   `powershell -ExecutionPolicy Bypass -File scripts\serve.ps1`
   PASS: uvicorn serves on `0.0.0.0:8443` with `--ssl-certfile certs\dev-cert.pem --ssl-keyfile certs\dev-key.pem` (never use `-AllowPlainHttp` for a phone — that flag serves loopback plain HTTP for dev only).
-- [ ] 2.2 In a SECOND terminal, print pairing info:
+- [x] 2.2 In a SECOND terminal, print pairing info: (user-confirmed done 2026-09-26)
   `.\venv312\Scripts\python.exe scripts\pair_device.py`
   PASS: prints `=== Everyday Buddy pairing ===` with `LAN IP(s) : <e.g. 192.168.1.10>`, `Port      : 8443 (https)`, `Token     : <long token>`, `Cert SHA256: <hex>`. Write down the first LAN IP and the fingerprint. If it prints `(no cert yet — run scripts/gen_cert.ps1)`, do prerequisite 0.7.
-- [ ] 2.3 On the phone (same Wi-Fi), open the phone browser to exactly:
+- [x] 2.3 On the phone (same Wi-Fi), open the phone browser to exactly: (user-confirmed done 2026-09-26)
   `https://<ip-from-2.2>:8443/health` (substitute the IP, e.g. `https://192.168.1.10:8443/health`)
   PASS: after accepting/warning through the cert (see §4), the page shows exactly `{"status": "ok"}`. FAIL ("success vs distrust" split):
   - Success = the JSON above (server reachable over LAN TLS).
   - Cert distrust = a full-page interstitial warning (wording varies — see §4) with NO JSON. That warning is EXPECTED for the self-signed dev cert and proves TLS is on; only proceed past it deliberately for this test.
   - Any timeout / `ERR_CONNECTION_REFUSED` / `unreachable` = FAIL: wrong IP, different Wi-Fi, Windows Firewall blocking 8443, or `serve.ps1` not running. Fix and retry.
-- [ ] 2.4 Keep the server running for §4 and §5.
+- [x] 2.4 Keep the server running for §4 and §5. (user-confirmed done 2026-09-26)
 
 ---
 
