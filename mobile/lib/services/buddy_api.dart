@@ -329,6 +329,72 @@ class BuddyApi {
     );
   }
 
+  /// POST /proximity/threshold (near only, API.md Sprint 2.3c).
+  ///
+  /// Persists the BLE RSSI near threshold server-side (`security.yaml`);
+  /// the response carries the same `{mode, rssi_near_threshold}` shape as
+  /// GET /proximity so callers apply exactly what the server gates on.
+  /// Out-of-range values are rejected client-side without touching the
+  /// network (strict int contract: -100..-30 dBm).
+  Future<ProximityConfig> setProximityThreshold(int threshold) async {
+    if (threshold < -100 || threshold > -30) {
+      throw const BuddyApiException(
+        code: 'bad_request',
+        message: 'Threshold must be between -100 and -30 dBm.',
+      );
+    }
+    http.Response resp;
+    try {
+      resp = await _client
+          .post(
+            _uri('/proximity/threshold'),
+            headers: <String, String>{
+              ..._authHeaders,
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(<String, int>{'rssi_near_threshold': threshold}),
+          )
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
+    } on http.ClientException {
+      throw routeError;
+    }
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
+    }
+    try {
+      final dynamic decoded = jsonDecode(resp.body);
+      if (decoded is Map<String, dynamic>) {
+        final dynamic rawThreshold = decoded['rssi_near_threshold'];
+        final dynamic rawMode = decoded['mode'];
+        final int? parsed = rawThreshold is int
+            ? rawThreshold
+            : int.tryParse('$rawThreshold');
+        if (parsed != null) {
+          return ProximityConfig(
+            mode: rawMode is String ? rawMode : 'lan_only',
+            rssiNearThreshold: parsed,
+          );
+        }
+      }
+    } on FormatException {
+      // Fall through to bad_response below.
+    }
+    throw const BuddyApiException(
+      code: 'bad_response',
+      message: 'The laptop sent a proximity config the app could not read.',
+    );
+  }
+
   /// POST /command (near only). Throws 401/403/429 typed from the error shape.
   Future<CommandResult> postCommand(String text, {String? rssi}) async {
     final Map<String, String> headers = <String, String>{
