@@ -623,3 +623,242 @@ def test_encode_jpeg_rgb_rejects_bad_input() -> None:
         streams.encode_jpeg_rgb(4, 2, b"\x00" * 10)
     with pytest.raises(ValueError):
         streams.encode_jpeg_rgb(0, 2, b"")
+
+
+# --- route: webcam consent gating (mirrors /screen, separate scope) ---
+# All streaming tests mock capture — no camera needed.
+
+
+def _request_webcam_consent(client: TestClient) -> str:
+    resp = client.post("/webcam/consent", headers=_auth())
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "pending" and body["consent_id"]
+    return body["consent_id"]
+
+
+def _approve_webcam(client: TestClient, consent_id: str) -> None:
+    resp = client.post(f"/webcam/consent/{consent_id}/approve", headers=_auth())
+    assert resp.status_code == 200
+    assert resp.json() == {"consent_id": consent_id, "status": "approved"}
+
+
+@pytest.fixture()
+def fake_webcam(monkeypatch):
+    """Mock webcam capture (no camera) + fast frame rate (no 0.5s sleeps)."""
+    jpeg = _tiny_jpeg("blue")
+    monkeypatch.setattr(streams, "capture_webcam_jpeg", lambda *a, **k: jpeg)
+    monkeypatch.setattr(streams, "TARGET_FPS", 100.0)
+    return jpeg
+
+
+def _webcam_response(app_lan, consent_id: str, jpeg: bytes) -> object:
+    """Build the webcam route's MJPEGResponse for an approved grant.
+
+    The route's consent/proximity gating is covered by the TestClient tests
+    above; here we test the streaming transport with the same response class
+    the route returns.
+    """
+    manager = app_lan.state.webcam_consent
+    assert manager.is_approved(consent_id)
+    return streams.MJPEGResponse(
+        lambda: streams.mjpeg_generator(
+            capture_fn=lambda: jpeg, target_fps=1000.0,
+            consent_valid=lambda: manager.is_approved(consent_id),
+        )
+    )
+
+
+def test_webcam_requires_token(app_lan) -> None:
+    client = TestClient(app_lan)
+    assert client.get("/webcam").status_code == 401
+    assert client.post("/webcam/consent").status_code == 401
+
+
+def test_webcam_refuses_without_consent(app_lan) -> None:
+    client = TestClient(app_lan)
+    resp = client.get("/webcam", headers=_auth())
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "consent_required"
+
+
+def test_webcam_refuses_unknown_consent(app_lan) -> None:
+    client = TestClient(app_lan)
+    resp = client.get("/webcam?consent_id=nope", headers=_auth())
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "consent_required"
+
+
+def test_webcam_refuses_while_pending(app_lan) -> None:
+    client = TestClient(app_lan)
+    cid = _request_webcam_consent(client)
+    resp = client.get(f"/webcam?consent_id={cid}", headers=_auth())
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "consent_required"
+
+
+def test_webcam_refuses_when_denied(app_lan) -> None:
+    client = TestClient(app_lan)
+    cid = _request_webcam_consent(client)
+    denied = client.post(f"/webcam/consent/{cid}/deny", headers=_auth())
+    assert denied.status_code == 200
+    assert denied.json()["status"] == "denied"
+    resp = client.get(f"/webcam?consent_id={cid}", headers=_auth())
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "consent_denied"
+
+
+def test_webcam_far_mode_forbidden(app_bt, fake_webcam) -> None:
+    client = TestClient(app_bt)
+    resp = client.get("/webcam", headers=_auth())  # no X-RSSI -> far
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
+    assert client.post("/webcam/consent", headers=_auth()).status_code == 403
+
+
+def test_webcam_consent_endpoints_far_mode_forbidden(app_bt) -> None:
+    client = TestClient(app_bt)
+    assert client.post("/webcam/consent/abc/approve", headers=_auth()).status_code == 403
+    assert client.post("/webcam/consent/abc/deny", headers=_auth()).status_code == 403
+    assert client.post("/webcam/consent/abc/revoke", headers=_auth()).status_code == 403
+
+
+def test_webcam_approve_unknown_consent_404(app_lan) -> None:
+    client = TestClient(app_lan)
+    resp = client.post("/webcam/consent/does-not-exist/approve", headers=_auth())
+    assert resp.status_code == 404
+    assert resp.json()["error"]["code"] == "not_found"
+
+
+def test_webcam_approve_after_deny_conflicts(app_lan) -> None:
+    client = TestClient(app_lan)
+    cid = _request_webcam_consent(client)
+    client.post(f"/webcam/consent/{cid}/deny", headers=_auth())
+    resp = client.post(f"/webcam/consent/{cid}/approve", headers=_auth())
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "consent_denied"
+
+
+@pytest.mark.asyncio
+async def test_webcam_approved_stream_returns_multipart_jpeg(app_lan, fake_webcam) -> None:
+    client = TestClient(app_lan)
+    cid = _request_webcam_consent(client)
+    _approve_webcam(client, cid)
+    status, bodies, sent = await _call_mjpeg_response(
+        _webcam_response(app_lan, cid, fake_webcam), disconnect_after_frames=4
+    )
+    assert status == 200
+    content_types = [m["headers"] for m in sent if m["type"] == "http.response.start"]
+    assert any(b"multipart/x-mixed-replace" in v for _, v in content_types[0])
+    body = b"".join(bodies)
+    assert body.count(b"--frame") >= 2
+    assert fake_webcam in body  # the exact mocked JPEG bytes are framed
+    assert streams.JPEG_SOI in body
+
+
+def test_webcam_revoke_live_grant_stops_stream(app_lan, fake_webcam) -> None:
+    client = TestClient(app_lan)
+    cid = _request_webcam_consent(client)
+    _approve_webcam(client, cid)
+    resp = client.post(f"/webcam/consent/{cid}/revoke", headers=_auth())
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "revoked"
+    # Idempotent: second revoke is still 200.
+    again = client.post(f"/webcam/consent/{cid}/revoke", headers=_auth())
+    assert again.status_code == 200
+    # The revoked grant now fails closed with consent_denied.
+    denied = client.get(f"/webcam?consent_id={cid}", headers=_auth())
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "consent_denied"
+
+
+def test_webcam_scope_isolated_from_screen(app_lan) -> None:
+    """A screen approval must NEVER authorize /webcam and vice versa."""
+    client = TestClient(app_lan)
+    screen_cid = _request_consent(client)
+    _approve(client, screen_cid)
+    webcam_cid = _request_webcam_consent(client)
+    _approve_webcam(client, webcam_cid)
+    # Cross-scope grants fail closed with consent_required (unknown to this scope).
+    assert client.get(f"/webcam?consent_id={screen_cid}", headers=_auth()).status_code == 403
+    assert client.get(f"/webcam?consent_id={screen_cid}", headers=_auth()).json()["error"]["code"] == "consent_required"
+    assert client.get(f"/screen?consent_id={webcam_cid}", headers=_auth()).status_code == 403
+    assert client.get(f"/screen?consent_id={webcam_cid}", headers=_auth()).json()["error"]["code"] == "consent_required"
+
+
+@pytest.mark.asyncio
+async def test_webcam_frames_touch_activity_via_header(app_lan, fake_webcam, monkeypatch) -> None:
+    """Decision (2): frame pulls are activity; grant also accepted via header.
+
+    Drives the REAL /webcam route (auth + consent + heartbeat wrapper) with
+    the grant passed as X-Consent-Id instead of the query param.
+    """
+    touches: list[str] = []
+    import server.main as main_mod
+
+    real_touch = main_mod.touch_activity
+
+    def counting_touch(state) -> None:
+        touches.append("frame")
+        real_touch(state)
+
+    monkeypatch.setattr("server.main.touch_activity", counting_touch)
+    client = TestClient(app_lan)
+    cid = _request_webcam_consent(client)
+    _approve_webcam(client, cid)
+
+    gone = anyio.Event()
+    sent_body = False
+    frames_seen = 0
+
+    async def receive() -> dict:
+        nonlocal sent_body
+        if not sent_body:
+            sent_body = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await gone.wait()  # _client_gone's 0.05s poll treats the wait as "connected"
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        nonlocal frames_seen
+        if message["type"] == "http.response.body" and message.get("body", b""):
+            frames_seen += message["body"].count(streams.JPEG_SOI)
+            if frames_seen >= 2:
+                gone.set()
+
+    scope = _http_scope("/webcam")
+    scope["headers"].append((b"x-consent-id", cid.encode()))
+    with anyio.fail_after(20):
+        await app_lan(scope, receive, send)
+    assert frames_seen >= 2
+    assert len(touches) >= 2
+
+
+# --- unit: webcam capture (no camera needed) ---
+
+
+def test_capture_webcam_jpeg_requires_opencv(monkeypatch) -> None:
+    """Missing opencv-python fails loudly, not with an ImportError traceback."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    with pytest.raises(RuntimeError, match="opencv-python is required"):
+        streams.capture_webcam_jpeg()
+
+
+def test_capture_webcam_jpeg_fail_closed(monkeypatch) -> None:
+    """A camera that yields no frame raises instead of emitting empty bytes."""
+    import sys
+    import types
+
+    class _DeadCamera:
+        def read(self):
+            return (False, None)
+
+        def release(self):
+            pass
+
+    fake_cv2 = types.SimpleNamespace(VideoCapture=lambda index: _DeadCamera())
+    monkeypatch.setitem(sys.modules, "cv2", fake_cv2)
+    with pytest.raises(ValueError, match="did not return a frame"):
+        streams.capture_webcam_jpeg()
