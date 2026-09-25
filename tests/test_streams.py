@@ -23,6 +23,9 @@ TOKEN = "test-token-123"
 
 
 def _security(path, mode="lan_only") -> None:
+    # Track A1: heartbeat tests below pin the opt-in path (flag true keeps
+    # pre-A1 touch_activity per tick). Default-false behaviour is covered in
+    # tests/test_track_a1.py with a flagless file.
     path.write_text(
         yaml.safe_dump(
             {
@@ -35,6 +38,7 @@ def _security(path, mode="lan_only") -> None:
                     "issued_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "proximity": {"mode": mode, "rssi_near_threshold": -60, "fail_mode": "far"},
+                "streams_follow_counts_as_activity": True,
             }
         ),
         encoding="utf-8",

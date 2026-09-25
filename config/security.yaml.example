@@ -7,6 +7,7 @@ auth:
   max_failed_attempts: 5
   lockout_minutes: 15
   idle_timeout_minutes: 60
+streams_follow_counts_as_activity: false  # Track A1: stream keep-alives (/events ticks, /screen//webcam frames) do NOT extend idle by default — idle decays from real requests only; set true to restore pre-A1 heartbeat behaviour
 tls:
   cert_path: "certs/dev-cert.pem"
   key_path: "certs/dev-key.pem"

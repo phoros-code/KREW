@@ -85,4 +85,4 @@ Explicit, un-skippable prompts before:
 
 ## Incident response (the short version)
 
-If you suspect a token leak or unauthorized access: rotate the token immediately from the laptop, check `logs/events.jsonl` for anything you didn't initiate, and if the laptop itself might be compromised, treat this as a full-system incident, not an Everyday Buddy–specific one.
+If you suspect a token leak or unauthorized access: rotate the token immediately from the laptop with `python scripts/rotate_token.py` (laptop-only CLI — regenerates the token via `server.auth` helpers, persists it atomically, and prints it once for re-pairing; the old token stops working immediately), check `logs/events.jsonl` for anything you didn't initiate, and if the laptop itself might be compromised, treat this as a full-system incident, not an Everyday Buddy–specific one.
