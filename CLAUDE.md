@@ -114,3 +114,11 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Sprint 3 (Security Architect subagent): HUMAN REVIEW PASS with no fixes — threshold auth/validation/persistence, revoke fail-closed, pinning, proximity fail-closed, throttle blind to X-RSSI, consent TTLs/bounds, error envelopes, mobile human error states all verified. pip-audit: 4 findings all in chromadb 1.1.1 (CrewAI transitive, no fixed versions, NOT reachable from phone surface) — report-only. 164 pytest + 73 dart + both analyzes clean.
 - Report-only notes for human: (a) badCertificateCallback bypassable by public-CA cert (unexploitable on RFC1918 LAN); (b) checkScreen maps 429 to unreachable copy (misleading text, fail-closed); (c) non-dict JSON body falls to FastAPI 422 (pre-existing, auth-first).
 - Next: §3 BLE walk, §4 TLS rejection, §5 in-app consent stream — all need physical devices. Then tag v0.1.0.
+
+## Session notes (2026-09-26, post-v0.1.0 extras)
+
+- Analysis of remaining spec items: only the optional webcam endpoint was unimplemented (API.md allowed omitting for v1); FCM/CrewAI/events-pagination/OS-prompt are explicitly v1.1-or-later — left alone.
+- Webcam done via subagents (Backend + Mobile in parallel): `capture_webcam_jpeg` (lazy cv2, open-read-release per frame, fail-closed), separate `webcam_consent` scope with cross-scope isolation tests both directions, approve/deny/revoke mirror, per-frame re-check; app Screen/Webcam SegmentedButton with per-source consent state (source toggle drops grant, stale mid-flight results discarded). 179 pytest + 89 dart, analyzes clean.
+- Security-review note fixed: `ScreenStatus.rateLimited` — 429 probes now show throttling copy, grant kept for Retry.
+- `opencv-python>=4.8.0` declared in pyproject only (requirements.txt 3.14 set untouched); opencv NOT installed — runtime dep for webcam use.
+- v0.1.0 tag exists; extras above are Unreleased (CHANGELOG) on master past the tag.
