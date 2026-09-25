@@ -129,6 +129,11 @@ enum ScreenStatus {
 
   /// No route to the laptop (socket/timeout/TLS).
   unreachable,
+
+  /// 429 — the laptop throttled this device (locked_out/rate_limited);
+  /// wait, then retry. A live grant (if any) is kept — the probe, not the
+  /// grant, was rejected.
+  rateLimited,
 }
 
 /// Thin HTTP client for the control server. All traffic is TLS to
@@ -668,7 +673,166 @@ class BuddyApi {
         case 'unauthorized':
         case 'token_expired':
           return ScreenStatus.unauthorized;
+        case 'locked_out':
+        case 'rate_limited':
+          return ScreenStatus.rateLimited;
         default:
+          if (resp.statusCode == 429) return ScreenStatus.rateLimited;
+          if (resp.statusCode == 401) return ScreenStatus.unauthorized;
+          if (resp.statusCode == 403) return ScreenStatus.forbidden;
+          return ScreenStatus.unreachable;
+      }
+    } on TimeoutException {
+      return ScreenStatus.unreachable;
+    } on SocketException {
+      return ScreenStatus.unreachable;
+    } on HttpException {
+      return ScreenStatus.unreachable;
+    } on HandshakeException {
+      return ScreenStatus.unreachable;
+    } on TlsException {
+      return ScreenStatus.unreachable;
+    } on http.ClientException {
+      return ScreenStatus.unreachable;
+    }
+  }
+
+  /// `https://<host>:8443/webcam?consent_id=<id>` — separate consent scope
+  /// from /screen (a screen grant NEVER authorizes /webcam and vice versa).
+  /// Same transport shape as [screenStreamUrl]: query-param form preferred,
+  /// X-Consent-Id header also sent. Never logged: the query carries the
+  /// live grant.
+  Uri webcamStreamUrl(String consentId) =>
+      _uri('/webcam').replace(queryParameters: <String, String>{'consent_id': consentId});
+
+  /// POST /webcam/consent — create a webcam request (near only).
+  ///
+  /// Mirror of [requestScreenConsent] on the separate webcam scope: returns
+  /// the consent id in PENDING state; the app polls [checkWebcam] until it
+  /// flips to available/denied. Same timeouts and error mapping.
+  Future<String> requestWebcamConsent() async {
+    http.Response resp;
+    try {
+      resp = await _client
+          .post(_uri('/webcam/consent'), headers: _authHeaders)
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
+    } on http.ClientException {
+      throw routeError;
+    }
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
+    }
+    try {
+      final dynamic decoded = jsonDecode(resp.body);
+      if (decoded is Map<String, dynamic>) {
+        final dynamic id = decoded['consent_id'];
+        if (id is String && id.isNotEmpty) return id;
+      }
+    } on FormatException {
+      // Fall through to bad_response below.
+    }
+    throw const BuddyApiException(
+      code: 'bad_response',
+      message: 'The laptop sent a consent reply the app could not read.',
+    );
+  }
+
+  /// POST /webcam/consent/{id}/revoke — pull back a live webcam grant early.
+  ///
+  /// Mirror of [revokeScreenConsent]: unreachable/TLS failures become
+  /// [routeError]/[tlsError], any non-200 becomes the typed server envelope
+  /// (404 unknown/expired, 409 not-an-active-grant). Callers stopping a
+  /// preview ignore 404/409 and still reset local state.
+  Future<void> revokeWebcamConsent(String consentId) async {
+    if (consentId.isEmpty) {
+      throw const BuddyApiException(
+        code: 'bad_request',
+        message: 'There is no preview grant to stop.',
+      );
+    }
+    http.Response resp;
+    try {
+      resp = await _client
+          .post(
+            _uri('/webcam/consent/${Uri.encodeComponent(consentId)}/revoke'),
+            headers: _authHeaders,
+          )
+          .timeout(_timeout);
+    } on TimeoutException {
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
+    } on http.ClientException {
+      throw routeError;
+    }
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
+    }
+  }
+
+  /// Probe /webcam status without starting a stream. Mirror of [checkScreen]
+  /// on the separate webcam scope — same streamed-send probe (a 200 is an
+  /// infinite MJPEG body), same status mapping INCLUDING rateLimited, same
+  /// transport failures mapping to [ScreenStatus.unreachable].
+  Future<ScreenStatus> checkWebcam({String? consentId}) async {
+    try {
+      Uri uri = _uri('/webcam');
+      if (consentId != null && consentId.isNotEmpty) {
+        uri = uri.replace(
+          queryParameters: <String, String>{'consent_id': consentId},
+        );
+      }
+      final http.Request request = http.Request('GET', uri);
+      request.headers.addAll(_authHeaders);
+      // Streamed send + cancel: a 200 is an infinite MJPEG body, so a
+      // plain get() would download forever. Uses _client (mockable);
+      // lifecycle stays with close().
+      final http.StreamedResponse resp = await _client
+          .send(request)
+          .timeout(_timeout);
+      // Drain-or-cancel: read error bodies fully, cancel real streams.
+      if (resp.statusCode == 200) {
+        await resp.stream.listen((_) {}).cancel();
+        return ScreenStatus.available;
+      }
+      final String body = await resp.stream.bytesToString();
+      final BuddyApiException err = BuddyApiException.fromRaw(
+        resp.statusCode,
+        body,
+      );
+      switch (err.code) {
+        case 'not_implemented':
+          return ScreenStatus.notImplemented;
+        case 'forbidden':
+          return ScreenStatus.forbidden;
+        case 'consent_required':
+          return ScreenStatus.consentRequired;
+        case 'consent_denied':
+          return ScreenStatus.consentDenied;
+        case 'unauthorized':
+        case 'token_expired':
+          return ScreenStatus.unauthorized;
+        case 'locked_out':
+        case 'rate_limited':
+          return ScreenStatus.rateLimited;
+        default:
+          if (resp.statusCode == 429) return ScreenStatus.rateLimited;
           if (resp.statusCode == 401) return ScreenStatus.unauthorized;
           if (resp.statusCode == 403) return ScreenStatus.forbidden;
           return ScreenStatus.unreachable;
