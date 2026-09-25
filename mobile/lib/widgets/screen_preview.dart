@@ -5,22 +5,33 @@ import '../services/proximity_service.dart';
 import '../theme/buddy_theme.dart';
 import 'mjpeg_player.dart';
 
-/// Consent-gated screen preview pointed at GET /screen.
+/// Consent-gated live preview pointed at GET /screen or GET /webcam
+/// (see [PreviewSource] — separate consent scopes).
 ///
 /// SECURITY.md + API.md rules enforced here:
 /// - The stream NEVER auto-starts on screen open. A network call happens
 ///   only after the user taps the consent button, and the laptop must
 ///   approve the request out of band before ANY /screen bytes flow.
 /// - FAR proximity blocks the preview (near-only endpoint → 403).
+///
+/// [source] selects the consent scope: screen and webcam grants are
+/// separate server-side scopes — a screen grant NEVER authorizes /webcam
+/// and vice versa. Consent state is per-source: changing [source] drops the
+/// old grant id and resets to needsConsent, so a grant from one scope is
+/// never sent to the other scope's endpoint.
+enum PreviewSource { screen, webcam }
+
 class ScreenPreview extends StatefulWidget {
   const ScreenPreview({
     super.key,
     required this.api,
     required this.proximity,
+    this.source = PreviewSource.screen,
   });
 
   final BuddyApi? api;
   final ProximityMode proximity;
+  final PreviewSource source;
 
   @override
   State<ScreenPreview> createState() => _ScreenPreviewState();
@@ -46,6 +57,32 @@ class _ScreenPreviewState extends State<ScreenPreview> {
   /// so only a new key restarts it — no network ever fires from build.
   int _streamKey = 0;
 
+  bool get _isWebcam => widget.source == PreviewSource.webcam;
+
+  /// Card title per source ('Laptop screen' vs 'Laptop webcam').
+  String get _sourceTitle => _isWebcam ? 'Laptop webcam' : 'Laptop screen';
+
+  /// Sentence noun per source ('Screen preview' vs 'Webcam preview').
+  String get _previewNoun => _isWebcam ? 'Webcam preview' : 'Screen preview';
+
+  IconData get _sourceIcon =>
+      _isWebcam ? Icons.videocam_outlined : Icons.monitor_outlined;
+
+  IconData get _sourceIconFilled =>
+      _isWebcam ? Icons.videocam : Icons.monitor;
+
+  @override
+  void didUpdateWidget(ScreenPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.source != widget.source) {
+      // Separate consent scopes: drop the old grant id and start over, so a
+      // screen grant is never sent to /webcam (or vice versa).
+      _phase = _PreviewPhase.needsConsent;
+      _consentId = null;
+      _errorMessage = '';
+    }
+  }
+
   /// Step 1: create the consent request on the laptop.
   Future<void> _requestConsent() async {
     if (widget.api == null) return;
@@ -54,7 +91,9 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       _errorMessage = '';
     });
     try {
-      final String id = await widget.api!.requestScreenConsent();
+      final String id = _isWebcam
+          ? await widget.api!.requestWebcamConsent()
+          : await widget.api!.requestScreenConsent();
       if (!mounted) return;
       setState(() {
         _consentId = id;
@@ -73,7 +112,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
   String _consentRequestError(BuddyApiException e) {
     switch (e.code) {
       case 'forbidden':
-        return 'Screen preview needs near proximity. Move closer to the laptop and try again.';
+        return '$_previewNoun needs near proximity. Move closer to the laptop and try again.';
       case 'unauthorized':
       case 'token_expired':
         return 'The pairing token was rejected. Re-pair from the Pair tab.';
@@ -87,12 +126,17 @@ class _ScreenPreviewState extends State<ScreenPreview> {
     final BuddyApi? api = widget.api;
     final String? id = _consentId;
     if (api == null || id == null) return;
+    final PreviewSource source = widget.source;
     setState(() {
       _phase = _PreviewPhase.checking;
       _errorMessage = '';
     });
-    final ScreenStatus status = await api.checkScreen(consentId: id);
-    if (!mounted) return;
+    final ScreenStatus status = source == PreviewSource.webcam
+        ? await api.checkWebcam(consentId: id)
+        : await api.checkScreen(consentId: id);
+    // A source toggle mid-flight drops the old grant (didUpdateWidget) —
+    // the stale probe result must not land on the new source's state.
+    if (!mounted || widget.source != source) return;
     setState(() => _applyGrantStatus(status));
   }
 
@@ -115,8 +159,13 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       _phase = _PreviewPhase.checking;
       _errorMessage = '';
     });
-    final ScreenStatus status = await api.checkScreen(consentId: id);
-    if (!mounted) return;
+    final PreviewSource source = widget.source;
+    final ScreenStatus status = source == PreviewSource.webcam
+        ? await api.checkWebcam(consentId: id)
+        : await api.checkScreen(consentId: id);
+    // Same stale-guard as _checkApproval: a source toggle mid-flight must
+    // not route the old scope's result into the new scope's state.
+    if (!mounted || widget.source != source) return;
     setState(() => _applyGrantStatus(status, restartStream: true));
   }
 
@@ -130,7 +179,11 @@ class _ScreenPreviewState extends State<ScreenPreview> {
     final String? id = _consentId;
     if (api != null && id != null && id.isNotEmpty) {
       try {
-        await api.revokeScreenConsent(id);
+        if (widget.source == PreviewSource.webcam) {
+          await api.revokeWebcamConsent(id);
+        } else {
+          await api.revokeScreenConsent(id);
+        }
       } on BuddyApiException {
         // Best-effort (see doc comment) — fall through to the local reset.
       }
@@ -164,7 +217,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case ScreenStatus.forbidden:
         _phase = _PreviewPhase.error;
         _errorMessage =
-            'Screen preview needs near proximity. Move closer to the laptop and try again.';
+            '$_previewNoun needs near proximity. Move closer to the laptop and try again.';
       case ScreenStatus.unauthorized:
         _phase = _PreviewPhase.error;
         _errorMessage =
@@ -173,6 +226,12 @@ class _ScreenPreviewState extends State<ScreenPreview> {
         _phase = _PreviewPhase.error;
         _errorMessage =
             'No route to the laptop — check the IP and Wi-Fi, then retry.';
+      case ScreenStatus.rateLimited:
+        // Throttled probe, not a dead grant — the id is kept so Retry
+        // re-probes via _checkApproval once the laptop stops throttling.
+        _phase = _PreviewPhase.error;
+        _errorMessage =
+            'The laptop is throttling requests — wait a few seconds, then retry.';
     }
   }
 
@@ -195,7 +254,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(Icons.monitor_outlined, size: 32, color: muted),
+            Icon(_sourceIcon, size: 32, color: muted),
             const SizedBox(height: BuddySpacing.s3),
             Text(
               'No laptop paired yet',
@@ -204,7 +263,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
             ),
             const SizedBox(height: BuddySpacing.s2),
             Text(
-              'Pair from the Pair tab first — then you can request a screen preview here.',
+              'Pair from the Pair tab first — then you can request a ${_isWebcam ? 'webcam' : 'screen'} preview here.',
               style: small,
               textAlign: TextAlign.center,
             ),
@@ -234,7 +293,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
             ),
             const SizedBox(height: BuddySpacing.s2),
             Text(
-              'Screen preview is a near-only endpoint. Move closer to the laptop — you can still follow task notifications from the Chat and Tasks tabs.',
+              '$_previewNoun is a near-only endpoint. Move closer to the laptop — you can still follow task notifications from the Chat and Tasks tabs.',
               style: small,
               textAlign: TextAlign.center,
             ),
@@ -253,17 +312,19 @@ class _ScreenPreviewState extends State<ScreenPreview> {
             children: <Widget>[
               Row(
                 children: <Widget>[
-                  Icon(Icons.monitor_outlined, size: 20, color: muted),
+                  Icon(_sourceIcon, size: 20, color: muted),
                   const SizedBox(width: BuddySpacing.s2),
                   Text(
-                    'Screen preview',
+                    _sourceTitle,
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ],
               ),
               const SizedBox(height: BuddySpacing.s2),
               Text(
-                'This shows everything on the laptop screen — including other windows and anything being typed. Frames are streamed live and never saved.',
+                _isWebcam
+                    ? 'This shows the laptop camera feed — everything the camera sees, streamed live. Frames are never saved.'
+                    : 'This shows everything on the laptop screen — including other windows and anything being typed. Frames are streamed live and never saved.',
                 style: small,
               ),
               const SizedBox(height: BuddySpacing.s4),
@@ -351,17 +412,18 @@ class _ScreenPreviewState extends State<ScreenPreview> {
           ),
         );
       case _PreviewPhase.notImplemented:
-        // Defensive 501 state: current servers implement /screen, but an
-        // older laptop build answers not-implemented instead of streaming.
+        // Defensive 501 state: current servers implement the preview
+        // endpoints, but an older laptop build answers not-implemented
+        // instead of streaming.
         return _Frame(
           hairline: hairline,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Icon(Icons.monitor_outlined, size: 32, color: muted),
+              Icon(_sourceIcon, size: 32, color: muted),
               const SizedBox(height: BuddySpacing.s3),
               Text(
-                'Screen preview is not on this server yet',
+                '$_previewNoun is not on this server yet',
                 style: Theme.of(context).textTheme.titleMedium,
                 textAlign: TextAlign.center,
               ),
@@ -461,8 +523,8 @@ class _ScreenPreviewState extends State<ScreenPreview> {
             children: <Widget>[
               Row(
                 children: <Widget>[
-                  const Icon(
-                    Icons.monitor,
+                  Icon(
+                    _sourceIconFilled,
                     size: 20,
                     color: BuddyColors.primary,
                   ),
@@ -475,13 +537,20 @@ class _ScreenPreviewState extends State<ScreenPreview> {
               ),
               const SizedBox(height: BuddySpacing.s2),
               Text(
-                'Streaming the laptop screen live. Frames are never saved — stop the preview when you are done.',
+                _isWebcam
+                    ? 'Streaming the laptop camera live. Frames are never saved — stop the preview when you are done.'
+                    : 'Streaming the laptop screen live. Frames are never saved — stop the preview when you are done.',
                 style: small,
               ),
               const SizedBox(height: BuddySpacing.s3),
               MjpegPlayer(
-                key: ValueKey<String>('mjpeg-$grantId-$_streamKey'),
-                streamUrl: api.screenStreamUrl(grantId).toString(),
+                key: ValueKey<String>(
+                  'mjpeg-${_isWebcam ? 'webcam' : 'screen'}-$grantId-$_streamKey',
+                ),
+                streamUrl: (_isWebcam
+                        ? api.webcamStreamUrl(grantId)
+                        : api.screenStreamUrl(grantId))
+                    .toString(),
                 headers: <String, String>{
                   ...api.authHeaders,
                   'X-Consent-Id': grantId,
