@@ -5,6 +5,8 @@
 - GET  /events   — near or far, SSE tail of logs/events.jsonl
 - GET  /screen   — near only + explicit consent grant, MJPEG stream
 - POST /screen/consent (+ /{id}/approve, /{id}/deny, /{id}/revoke) — consent flow, near only
+- GET  /webcam   — near only + explicit consent grant (separate scope from /screen), MJPEG webcam stream
+- POST /webcam/consent (+ /{id}/approve, /{id}/deny, /{id}/revoke) — consent flow, near only
 
 Every route except /health requires the bearer dependency from server.auth.
 Proximity failures default to FAR (fail closed — SECURITY.md).
@@ -39,6 +41,16 @@ ERROR_CONSENT_REQUIRED = {
 }
 ERROR_CONSENT_DENIED = {
     "error": {"code": "consent_denied", "message": "Screen share request was denied"}
+}
+# Webcam consent envelopes: same codes/shapes as the screen ones above so the
+# phone app handles them uniformly — only the human-readable message differs.
+# A screen approval must NEVER authorize /webcam and vice versa (separate
+# ConsentManager scope below).
+ERROR_WEBCAM_CONSENT_REQUIRED = {
+    "error": {"code": "consent_required", "message": "Webcam access requires explicit on-device consent"}
+}
+ERROR_WEBCAM_CONSENT_DENIED = {
+    "error": {"code": "consent_denied", "message": "Webcam access request was denied"}
 }
 ERROR_CONSENT_NOT_FOUND = {"error": {"code": "not_found", "message": "Unknown consent request"}}
 ERROR_RATE_LIMITED = {
@@ -271,6 +283,11 @@ def create_app(
     app.state.auth_state = state
     consent = streams.ConsentManager()
     app.state.consent_manager = consent
+    # Separate consent scope for the webcam: a screen approval must NEVER
+    # authorize /webcam and vice versa. Same TTLs/bounds (ConsentManager
+    # defaults) — distinct record store.
+    webcam_consent = streams.ConsentManager()
+    app.state.webcam_consent = webcam_consent
 
     # Per-IP request throttle from config/security.yaml (review item 3).
     # Runs before auth so one noisy client can't starve the loop; 429s carry
@@ -509,6 +526,81 @@ def create_app(
 
         def build_gen():
             for chunk in streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id)):
+                touch_activity(state)  # frame pulls are activity (decision 2)
+                yield chunk
+
+        return streams.MJPEGResponse(build_gen)
+
+    @app.post("/webcam/consent")
+    def webcam_consent_request(_auth: AuthState = Depends(require_near)) -> dict:
+        """Create a PENDING webcam-access consent request (near-only).
+
+        Separate scope from /screen: this grant authorizes ONLY /webcam.
+        Same TTLs/bounds as screen (ConsentManager defaults).
+        """
+        consent_id = webcam_consent.start_consent_request()
+        return {"consent_id": consent_id, "status": "pending"}
+
+    @app.post("/webcam/consent/{consent_id}/approve")
+    def webcam_consent_approve(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
+        """Laptop-side approval for a pending webcam-access request (near-only)."""
+        if webcam_consent.approve(consent_id):
+            return {"consent_id": consent_id, "status": "approved"}
+        status = webcam_consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        if status is streams.ConsentStatus.DENIED:
+            raise _http_error(409, ERROR_WEBCAM_CONSENT_DENIED)
+        raise _http_error(400, {"error": {"code": "bad_request", "message": "Consent request is not pending"}})
+
+    @app.post("/webcam/consent/{consent_id}/deny")
+    def webcam_consent_deny(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
+        """Laptop-side denial for a pending webcam-access request (near-only)."""
+        if webcam_consent.deny(consent_id):
+            return {"consent_id": consent_id, "status": "denied"}
+        status = webcam_consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        raise _http_error(409, {"error": {"code": "conflict", "message": "Consent already approved"}})
+
+    @app.post("/webcam/consent/{consent_id}/revoke")
+    def webcam_consent_revoke(consent_id: str, _auth: AuthState = Depends(require_near)) -> dict:
+        """Laptop-side early revocation of a live webcam grant (near-only).
+
+        Revocation takes effect on the next per-frame re-check, so a live
+        /webcam stream stops within ~1 frame interval.
+        """
+        if webcam_consent.revoke(consent_id):
+            return {"consent_id": consent_id, "status": "revoked"}
+        status = webcam_consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        raise _http_error(409, {"error": {"code": "conflict", "message": "Consent is not an active grant"}})
+
+    @app.get("/webcam")
+    def webcam(request: Request, _auth: AuthState = Depends(require_near)) -> StreamingResponse:
+        """MJPEG stream of the laptop webcam — near-only AND consent-gated.
+
+        Mirrors /screen exactly, with a SEPARATE consent scope: only a grant
+        from POST /webcam/consent authorizes this stream — a /screen grant
+        fails closed with 403 here. The client passes the approved grant as
+        ``?consent_id=…`` or the ``X-Consent-Id`` header. The grant is
+        re-checked on every frame, so expiry/revocation stops a live stream.
+        """
+        consent_id = request.query_params.get("consent_id") or request.headers.get("x-consent-id") or ""
+        status = webcam_consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(403, ERROR_WEBCAM_CONSENT_REQUIRED)
+        if status in (streams.ConsentStatus.DENIED, streams.ConsentStatus.REVOKED):
+            raise _http_error(403, ERROR_WEBCAM_CONSENT_DENIED)
+        if status is not streams.ConsentStatus.APPROVED:
+            raise _http_error(403, ERROR_WEBCAM_CONSENT_REQUIRED)
+
+        def build_gen():
+            for chunk in streams.mjpeg_generator(
+                capture_fn=streams.capture_webcam_jpeg,
+                consent_valid=lambda: webcam_consent.is_approved(consent_id),
+            ):
                 touch_activity(state)  # frame pulls are activity (decision 2)
                 yield chunk
 
