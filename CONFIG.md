@@ -19,6 +19,18 @@ from `POST /command`) prefers `target_model` first. This is deliberate
 latency-vs-quality routing — not error fallback. Unpulled models fall through
 to the next candidate; nothing ever fails on a missing tag.
 
+```yaml
+wake:
+  stand_in: "alexa"                  # openWakeWord pre-trained name until maxy.onnx exists
+  custom_model: "voice/models/maxy.onnx"
+  threshold: 0.5                     # detection score cutoff; lower = more sensitive
+```
+
+**Wake-word rule:** `voice/wake.py::resolve_wake_models()` loads
+`custom_model` when that file exists, else the `stand_in`. Training
+procedure: `voice/models/README.md`. Threshold is read from here —
+never hardcoded in code.
+
 ## `config/tools.yaml`
 
 ```yaml
