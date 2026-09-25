@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -28,7 +31,13 @@ from starlette.types import Receive, Scope, Send
 
 from buddy_core.config import CONFIG_DIR
 from server import streams
-from server.auth import SECURITY_PATH, AuthState, load_auth_settings
+from server.auth import (
+    SECURITY_PATH,
+    _SECURITY_WRITE_LOCK,
+    _atomic_write_yaml,
+    AuthState,
+    load_auth_settings,
+)
 
 ERROR_UNAUTHORIZED = {"error": {"code": "unauthorized", "message": "Invalid or expired token"}}
 ERROR_TOKEN_EXPIRED = {
@@ -56,10 +65,29 @@ ERROR_CONSENT_NOT_FOUND = {"error": {"code": "not_found", "message": "Unknown co
 ERROR_RATE_LIMITED = {
     "error": {"code": "rate_limited", "message": "Too many requests — slow down and try again shortly"}
 }
+ERROR_IDLE_EXPIRED = {
+    "error": {"code": "idle_expired", "message": "Session idle — re-authenticate from the laptop"}
+}
+ERROR_BUSY = {
+    "error": {"code": "busy", "message": "Server busy — too many commands in flight"}
+}
+# Stream-termination variant of the absolute-ceiling envelope: same code/shape
+# as ERROR_TOKEN_EXPIRED so phone handling is uniform — emitted as the final
+# SSE `event: error` frame when a live stream outlives the 30-day ceiling.
+ERROR_TOKEN_EXPIRED_STREAM = {
+    "error": {"code": "token_expired", "message": "Pairing token exceeded its absolute age — re-pair from the laptop"}
+}
 
 # Documented default for network.rate_limit_per_minute (CONFIG.md).
 # Missing/unparseable config falls back here — never to "unlimited".
 DEFAULT_RATE_LIMIT_PER_MINUTE = 60
+
+# /command input bound (Track A1): kills oversized payloads before they reach
+# the orchestrator. Module constant near the route per spec.
+MAX_COMMAND_CHARS = 2000
+# Bounded in-flight /command work (Track A1): at most N BackgroundTask bodies
+# run concurrently; the N+1th request gets 503 busy (non-blocking acquire).
+MAX_COMMAND_INFLIGHT = 4
 
 
 def load_proximity_config(path: str | Path = SECURITY_PATH) -> dict:
@@ -108,6 +136,65 @@ def load_network_config(path: str | Path = SECURITY_PATH) -> dict:
     return {"rate_limit_per_minute": per_minute}
 
 
+def load_streams_follow_flag(path: str | Path = SECURITY_PATH) -> bool:
+    """Read `streams_follow_counts_as_activity` (Track A1).
+
+    Default False: stream keep-alive ticks do NOT extend idle — idle decays
+    from real requests only (SECURITY.md). When True, keeps the pre-A1
+    behaviour (each tick stamps activity). Accepts a top-level key or an
+    `auth:`-nested key (both read, top-level wins) for forwards compat.
+    """
+    path = Path(path)
+    src = path if path.exists() else CONFIG_DIR / "security.yaml.example"
+    if not src.exists():
+        return False
+    try:
+        data = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if "streams_follow_counts_as_activity" in data:
+        return bool(data.get("streams_follow_counts_as_activity"))
+    auth = data.get("auth")
+    if isinstance(auth, dict) and "streams_follow_counts_as_activity" in auth:
+        return bool(auth.get("streams_follow_counts_as_activity"))
+    return False
+
+
+def _client_ip(request: Request) -> str:
+    """Extract the client IP for per-IP lockout buckets. Never empty."""
+    try:
+        client = request.client
+        if client is not None:
+            host = getattr(client, "host", None) or (client[0] if isinstance(client, (tuple, list)) else None)
+            if host:
+                return str(host)
+    except Exception:
+        pass
+    # Pure-ASGI scope fallback (direct-ASGI tests build scope dicts).
+    try:
+        scope = getattr(request, "scope", None)
+        if isinstance(scope, dict):
+            client = scope.get("client")
+            if client and client[0]:
+                return str(client[0])
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _envelope_for_code(code: str) -> dict:
+    """Map a verify_with_code failure code to its {error:{code,message}} envelope."""
+    if code == "token_expired":
+        return ERROR_TOKEN_EXPIRED_STREAM
+    if code == "idle_expired":
+        return ERROR_IDLE_EXPIRED
+    if code == "locked_out":
+        return ERROR_LOCKED
+    return ERROR_UNAUTHORIZED
+
+
 class RateLimiter:
     """Fixed-window per-client-IP request throttle (Phase 4 polish).
 
@@ -129,6 +216,11 @@ class RateLimiter:
     def allow(self, key: str) -> tuple[bool, float]:
         """Return (allowed, retry_after_seconds). Denials name the wait."""
         now = self._now()
+        # Evict stale windows so _hits stays bounded (Track A1): any entry
+        # whose window started >=60s ago is dead and must not accumulate.
+        for other, (ws, _c) in list(self._hits.items()):
+            if now - ws >= 60.0:
+                del self._hits[other]
         window_start, count = self._hits.get(key, (now, 0))
         if now - window_start >= 60.0:
             window_start, count = now, 0
@@ -297,15 +389,27 @@ def create_app(
     app.state.rate_limiter = limiter
     app.add_middleware(RateLimitMiddleware, limiter=limiter)
 
+    # Track A1: whether stream keep-alive ticks count as activity. Default
+    # False — idle decays from real requests only (SECURITY.md). When True,
+    # keeps the pre-A1 heartbeat behaviour.
+    streams_follow_counts_as_activity = load_streams_follow_flag(security_path)
+    app.state.streams_follow_counts_as_activity = streams_follow_counts_as_activity
+
+    # Track A1: bounded in-flight /command work. Per-app (not module-global)
+    # so tests get a fresh budget per create_app and can't pollute each other.
+    command_sem = threading.Semaphore(MAX_COMMAND_INFLIGHT)
+    app.state.command_semaphore = command_sem
+
     @app.exception_handler(_http_error)
     async def handle_http_error(_: Request, exc: _http_error) -> JSONResponse:
         return JSONResponse(status_code=exc.status_code, content=exc.content)
 
     def require_auth(request: Request) -> AuthState:
         token = _bearer_token(request.headers.get("authorization"))
-        if state.is_locked():
+        ip = _client_ip(request)
+        if state.is_locked(ip):
             raise _http_error(429, ERROR_LOCKED)
-        ok, code = state.verify_with_code(token)
+        ok, code = state.verify_with_code(token, ip)
         if ok:
             return state
         # Both 401s: the ceiling gets its own code so the expiring device
@@ -313,6 +417,10 @@ def create_app(
         # seeing the broadcast token_expired SSE frame (which needs auth).
         if code == "token_expired":
             raise _http_error(401, ERROR_TOKEN_EXPIRED)
+        if code == "locked_out":
+            raise _http_error(429, ERROR_LOCKED)
+        if code == "idle_expired":
+            raise _http_error(401, ERROR_IDLE_EXPIRED)
         raise _http_error(401, ERROR_UNAUTHORIZED)
 
     def require_near(request: Request, auth: AuthState = Depends(require_auth)) -> AuthState:
@@ -400,45 +508,79 @@ def create_app(
                 },
             )
         sec_path = Path(security_path)
-        sec_path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict = {}
-        if sec_path.exists():
-            try:
-                loaded = yaml.safe_load(sec_path.read_text(encoding="utf-8")) or {}
-            except yaml.YAMLError:
-                loaded = {}
-            if isinstance(loaded, dict):
-                data = loaded
-        prox = data.get("proximity")
-        if not isinstance(prox, dict):
-            prox = {}
-            data["proximity"] = prox
-        prox["rssi_near_threshold"] = value
-        tmp_path = sec_path.with_name(sec_path.name + ".tmp")
-        tmp_path.write_text(yaml.safe_dump(data), encoding="utf-8")
-        try:
-            tmp_path.chmod(0o600)
-        except OSError:
-            pass  # Windows ACLs — file still gitignored; see .gitignore
-        tmp_path.replace(sec_path)
+        # Shared write lock with _persist_auth_file + rotate(): the whole
+        # read-modify-write holds it so concurrent threshold+persist can't
+        # interleave into a torn file. Unique tmp via tempfile + fsync + 0600
+        # + atomic replace (see auth._atomic_write_yaml).
+        with _SECURITY_WRITE_LOCK:
+            sec_path.parent.mkdir(parents=True, exist_ok=True)
+            data: dict = {}
+            if sec_path.exists():
+                try:
+                    loaded = yaml.safe_load(sec_path.read_text(encoding="utf-8")) or {}
+                except yaml.YAMLError:
+                    loaded = {}
+                if isinstance(loaded, dict):
+                    data = loaded
+            prox = data.get("proximity")
+            if not isinstance(prox, dict):
+                prox = {}
+                data["proximity"] = prox
+            prox["rssi_near_threshold"] = value
+            _atomic_write_yaml(sec_path, data)
         prox_cfg["rssi_near_threshold"] = value
         return {"mode": prox_cfg.get("mode", "lan_only"), "rssi_near_threshold": value}
 
     @app.post("/command")
-    def command(body: dict, background: BackgroundTasks, _auth: AuthState = Depends(require_near)) -> dict:
+    def command(
+        body: dict, background: BackgroundTasks, request: Request, _auth: AuthState = Depends(require_near)
+    ) -> dict:
         from buddy_core import orchestrator
 
-        text = str(body.get("text", "")).strip()
+        raw = body.get("text") if isinstance(body, dict) else None
+        # Strict str: null/number/list must 400, never coerce via str()
+        # (kills the old null->"None" coercion).
+        if not isinstance(raw, str):
+            raise _http_error(400, {"error": {"code": "bad_request", "message": "Missing 'text'"}})
+        text = raw.strip()
         if not text:
             raise _http_error(400, {"error": {"code": "bad_request", "message": "Missing 'text'"}})
+        if len(text) > MAX_COMMAND_CHARS:
+            raise _http_error(
+                400,
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": f"'text' exceeds {MAX_COMMAND_CHARS} characters",
+                    }
+                },
+            )
+        # Bounded in-flight work: non-blocking acquire; N+1th gets 503 busy.
+        if not command_sem.acquire(blocking=False):
+            raise _http_error(503, ERROR_BUSY)
         task_id = uuid.uuid4().hex[:12]
-        # Quality-first: text/API callers prefer target_model (llama3.1:8b).
-        # Voice-loop latency routing lives in voice/voice_loop.py (source="voice").
-        background.add_task(orchestrator.run, text, task_id, "text")
+
+        def _run_and_release(t: str = text, tid: str = task_id) -> None:
+            try:
+                # Quality-first: text/API callers prefer target_model (llama3.1:8b).
+                # Voice-loop latency routing lives in voice/voice_loop.py (source="voice").
+                orchestrator.run(t, tid, "text")
+            finally:
+                command_sem.release()
+
+        background.add_task(_run_and_release)
         return {"task_id": task_id, "status": "queued"}
 
     @app.get("/events")
     def events(request: Request, _auth: AuthState = Depends(require_auth)):
+        # Capture the bearer for per-tick re-verification: no stream may
+        # outlive the 30-day ceiling (Track A1). verify_with_code stamps
+        # idle on success, so when the flag is False we restore last_activity
+        # to keep idle decaying from real requests only.
+        stream_token = _bearer_token(request.headers.get("authorization"))
+        stream_ip = _client_ip(request)
+        follow_counts = streams_follow_counts_as_activity
+
         async def stream():
             offset = log_path.stat().st_size if log_path.exists() else 0
             # Bounded replay (decision 4) — trailing slice only, then follow.
@@ -447,7 +589,17 @@ def create_app(
             # …then follow new lines until the client disconnects.
             while await _still_connected(request):
                 await asyncio.sleep(0.5)
+                prev_activity = state.last_activity
+                ok, code = state.verify_with_code(stream_token, stream_ip)
+                if not follow_counts:
+                    state.last_activity = prev_activity
+                if not ok:
+                    env = _envelope_for_code(code)
+                    yield format_sse("error", env)
+                    break
                 if not log_path.exists():
+                    if follow_counts:
+                        touch_activity(state)
                     continue
                 size = log_path.stat().st_size
                 if size < offset:
@@ -456,7 +608,8 @@ def create_app(
                     for event_type, payload in iter_log_events(log_path, offset):
                         yield format_sse(event_type, payload)
                     offset = size
-                touch_activity(state)  # keep-alives are activity (decision 2)
+                if follow_counts:
+                    touch_activity(state)
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -524,9 +677,24 @@ def create_app(
         if status is not streams.ConsentStatus.APPROVED:
             raise _http_error(403, ERROR_CONSENT_REQUIRED)
 
+        stream_token = _bearer_token(request.headers.get("authorization"))
+        stream_ip = _client_ip(request)
+        follow_counts = streams_follow_counts_as_activity
+
         def build_gen():
             for chunk in streams.mjpeg_generator(consent_valid=lambda: consent.is_approved(consent_id)):
-                touch_activity(state)  # frame pulls are activity (decision 2)
+                prev_activity = state.last_activity
+                ok, _code = state.verify_with_code(stream_token, stream_ip)
+                if not follow_counts:
+                    state.last_activity = prev_activity
+                if not ok:
+                    # MJPEG already sent 200 headers: typed error can't be
+                    # re-statused mid-multipart, so ending the stream IS the
+                    # signal (no frame outlives the ceiling). The /events
+                    # sibling above yields the matching error envelope.
+                    break
+                if follow_counts:
+                    touch_activity(state)
                 yield chunk
 
         return streams.MJPEGResponse(build_gen)
@@ -596,12 +764,23 @@ def create_app(
         if status is not streams.ConsentStatus.APPROVED:
             raise _http_error(403, ERROR_WEBCAM_CONSENT_REQUIRED)
 
+        stream_token = _bearer_token(request.headers.get("authorization"))
+        stream_ip = _client_ip(request)
+        follow_counts = streams_follow_counts_as_activity
+
         def build_gen():
             for chunk in streams.mjpeg_generator(
                 capture_fn=streams.capture_webcam_jpeg,
                 consent_valid=lambda: webcam_consent.is_approved(consent_id),
             ):
-                touch_activity(state)  # frame pulls are activity (decision 2)
+                prev_activity = state.last_activity
+                ok, _code = state.verify_with_code(stream_token, stream_ip)
+                if not follow_counts:
+                    state.last_activity = prev_activity
+                if not ok:
+                    break
+                if follow_counts:
+                    touch_activity(state)
                 yield chunk
 
         return streams.MJPEGResponse(build_gen)
