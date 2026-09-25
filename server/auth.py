@@ -79,6 +79,31 @@ def _parse_absolute_max_age_days(value: object) -> int:
     return days if days >= 1 else DEFAULT_ABSOLUTE_MAX_AGE_DAYS
 
 
+def generate_approval_secret() -> str:
+    """Generate a 64-hex laptop-only consent approval secret.
+
+    Same pattern as the pairing-token generation below (secrets module,
+    persisted to security.yaml on first run). The phone never sees this
+    value — approval requires loopback origin OR the X-Buddy-Approval
+    header matching it (see server/main.py require_approval).
+    """
+    return secrets.token_hex(32)
+
+
+def is_valid_approval_secret(value: object) -> bool:
+    """True only for a 64-char hex string (case-insensitive)."""
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if len(text) != 64:
+        return False
+    try:
+        int(text, 16)
+    except ValueError:
+        return False
+    return True
+
+
 @dataclass
 class AuthSettings:
     token: str = ""
@@ -89,6 +114,11 @@ class AuthSettings:
     token_absolute_max_age_days: int = DEFAULT_ABSOLUTE_MAX_AGE_DAYS
     # When the current token was issued (persisted in security.yaml).
     issued_at: datetime | None = None
+    # Laptop-only consent approval secret (64-hex). Empty means "not
+    # configured" — legacy/test files without it keep the pre-A3
+    # phone-token approval path so existing tests stay green; fresh
+    # installs generate + persist one (see load_auth_settings).
+    consent_approval_secret: str = ""
 
 
 def _atomic_write_yaml(path: Path, data: dict) -> None:
@@ -141,6 +171,8 @@ def load_auth_settings(path: str | Path = SECURITY_PATH) -> AuthSettings:
             raise RuntimeError(f"corrupt security config: {path}: {exc}") from exc
     auth = data.get("auth", data)
     issued_at = _parse_issued_at(auth.get("issued_at"))
+    raw_secret = auth.get("consent_approval_secret", "")
+    approval_secret = str(raw_secret or "").strip()
     settings = AuthSettings(
         token=str(auth.get("token", "") or ""),
         max_failed_attempts=int(auth.get("max_failed_attempts", 5)),
@@ -150,12 +182,16 @@ def load_auth_settings(path: str | Path = SECURITY_PATH) -> AuthSettings:
             auth.get("token_absolute_max_age_days", DEFAULT_ABSOLUTE_MAX_AGE_DAYS)
         ),
         issued_at=issued_at,
+        consent_approval_secret=approval_secret,
     )
     if not settings.token:
         settings.token = secrets.token_urlsafe(32)
         settings.issued_at = _utcnow()
+        if not settings.consent_approval_secret:
+            settings.consent_approval_secret = generate_approval_secret()
         data["auth"] = {
             "token": settings.token,
+            "consent_approval_secret": settings.consent_approval_secret,
             "token_rotation_days": auth.get("token_rotation_days", 30),
             "token_absolute_max_age_days": settings.token_absolute_max_age_days,
             "max_failed_attempts": settings.max_failed_attempts,
@@ -165,6 +201,17 @@ def load_auth_settings(path: str | Path = SECURITY_PATH) -> AuthSettings:
         }
         _persist_auth_file(path, data)
         return settings
+    if not settings.consent_approval_secret:
+        # Fail closed: legacy files that predate the approval secret get one
+        # generated and persisted on load, so the laptop-only approval gate
+        # is always armed — an existing install never silently keeps the
+        # pre-A3 phone-can-approve behavior.
+        settings.consent_approval_secret = generate_approval_secret()
+        if "auth" in data and isinstance(data["auth"], dict):
+            data["auth"]["consent_approval_secret"] = settings.consent_approval_secret
+        else:
+            data["consent_approval_secret"] = settings.consent_approval_secret
+        _persist_auth_file(path, data)
     # No backfill of issued_at here: a token with no recorded issuance is one
     # we cannot prove is within any age limit, so it stays None and verifies
     # as already-expired (fail closed — forces re-pair via rotate()).
