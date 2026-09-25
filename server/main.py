@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -42,6 +43,8 @@ from server.auth import (
     AuthState,
     load_auth_settings,
 )
+
+logger = logging.getLogger(__name__)
 
 ERROR_UNAUTHORIZED = {"error": {"code": "unauthorized", "message": "Invalid or expired token"}}
 ERROR_TOKEN_EXPIRED = {
@@ -110,23 +113,37 @@ def load_proximity_config(path: str | Path = SECURITY_PATH) -> dict:
         return {"mode": "lan_only", "rssi_near_threshold": -60, "fail_mode": "far"}
     data = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
     prox = data.get("proximity", {})
+    fail_mode = prox.get("fail_mode", "far")
+    if fail_mode == "near":
+        # Fail closed: "near" as the undeterminable-signal default would grant
+        # near-only routes with no signal at all — reject at load, warn
+        # loudly, and treat as "far". There is no near-fail-open mode.
+        logger.warning("proximity.fail_mode='near' rejected at load — failing closed to 'far'")
+        fail_mode = "far"
     return {
         "mode": prox.get("mode", "lan_only"),
         "rssi_near_threshold": prox.get("rssi_near_threshold", -60),
-        "fail_mode": prox.get("fail_mode", "far"),
+        "fail_mode": fail_mode,
     }
 
 
 def get_proximity(prox_cfg: dict, x_rssi: float | None = None) -> str:
-    """Return 'near' or 'far'. Undeterminable input ALWAYS yields 'far'."""
+    """Return 'near' or 'far'. Undeterminable input falls back to fail_mode.
+
+    fail_mode defaults to "far" and "near" is rejected at load, so this never
+    yields "near" without a real signal — fail closed (SECURITY.md).
+    """
+    fail_mode = prox_cfg.get("fail_mode", "far")
+    if fail_mode != "far":
+        fail_mode = "far"  # defensive: fail_mode must never resolve to "near"
     if prox_cfg.get("mode") == "lan_only":
         return "near"  # arrival over the LAN-bound socket is the proximity signal
     if x_rssi is None:
-        return "far"
+        return fail_mode
     try:
         return "near" if float(x_rssi) >= float(prox_cfg.get("rssi_near_threshold", -60)) else "far"
     except (TypeError, ValueError):
-        return "far"
+        return fail_mode
 
 
 def load_network_config(path: str | Path = SECURITY_PATH) -> dict:
@@ -1174,10 +1191,6 @@ def create_app(
         return streams.MJPEGResponse(build_gen)
 
     return app
-
-
-def build_app() -> FastAPI:
-    return create_app()
 
 
 app = create_app()
