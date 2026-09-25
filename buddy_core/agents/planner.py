@@ -82,6 +82,14 @@ def build_list_apps_plan(limits: AgentLimits) -> Plan:
     return plan
 
 
+def build_code_plan(rel_path: str, content: str, limits: AgentLimits) -> Plan:
+    """Single validated write_file step. Path/content are pre-resolved —
+    the planner never invents them (coder.resolve_code_target + LLM draft)."""
+    plan = Plan(steps=[ToolCall("write_file", {"path": rel_path, "content": content})], depth=0)
+    validate_plan(plan, limits)
+    return plan
+
+
 def _normalize(value: str) -> str:
     return value.strip().lower().replace("_", " ").replace("-", " ")
 
