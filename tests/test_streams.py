@@ -20,6 +20,7 @@ from server import streams
 from server.main import create_app
 
 TOKEN = "test-token-123"
+APPROVAL_SECRET = "a1" * 32  # 64-hex deterministic (Track A3 laptop-only approval)
 
 
 def _security(path, mode="lan_only") -> None:
@@ -31,6 +32,7 @@ def _security(path, mode="lan_only") -> None:
             {
                 "auth": {
                     "token": TOKEN,
+                    "consent_approval_secret": APPROVAL_SECRET,
                     "max_failed_attempts": 5,
                     "lockout_minutes": 15,
                     "idle_timeout_minutes": 60,
@@ -90,8 +92,13 @@ def _request_consent(client: TestClient) -> str:
     return body["consent_id"]
 
 
+def _approval() -> dict:
+    """Laptop-side approval header (Track A3: phone token alone is 403)."""
+    return _auth({"X-Buddy-Approval": APPROVAL_SECRET})
+
+
 def _approve(client: TestClient, consent_id: str) -> None:
-    resp = client.post(f"/screen/consent/{consent_id}/approve", headers=_auth())
+    resp = client.post(f"/screen/consent/{consent_id}/approve", headers=_approval())
     assert resp.status_code == 200
     assert resp.json() == {"consent_id": consent_id, "status": "approved"}
 
@@ -144,7 +151,7 @@ def test_screen_refuses_while_pending(app_lan) -> None:
 def test_screen_refuses_when_denied(app_lan) -> None:
     client = TestClient(app_lan)
     cid = _request_consent(client)
-    denied = client.post(f"/screen/consent/{cid}/deny", headers=_auth())
+    denied = client.post(f"/screen/consent/{cid}/deny", headers=_approval())
     assert denied.status_code == 200
     assert denied.json()["status"] == "denied"
     resp = client.get(f"/screen?consent_id={cid}", headers=_auth())
@@ -430,7 +437,12 @@ def test_consent_endpoints_far_mode_forbidden(app_bt) -> None:
 
 def test_approve_unknown_consent_404(app_lan) -> None:
     client = TestClient(app_lan)
-    resp = client.post("/screen/consent/does-not-exist/approve", headers=_auth())
+    # Phone-token-only approval fails closed before the existence check.
+    denied = client.post("/screen/consent/does-not-exist/approve", headers=_auth())
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "approval_forbidden"
+    # Laptop-side approval reaches the 404.
+    resp = client.post("/screen/consent/does-not-exist/approve", headers=_approval())
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "not_found"
 
@@ -439,17 +451,17 @@ def test_approve_is_idempotent_and_deny_after_approve_conflicts(app_lan) -> None
     client = TestClient(app_lan)
     cid = _request_consent(client)
     _approve(client, cid)
-    again = client.post(f"/screen/consent/{cid}/approve", headers=_auth())
+    again = client.post(f"/screen/consent/{cid}/approve", headers=_approval())
     assert again.status_code == 200
-    conflict = client.post(f"/screen/consent/{cid}/deny", headers=_auth())
+    conflict = client.post(f"/screen/consent/{cid}/deny", headers=_approval())
     assert conflict.status_code == 409
 
 
 def test_approve_after_deny_conflicts(app_lan) -> None:
     client = TestClient(app_lan)
     cid = _request_consent(client)
-    client.post(f"/screen/consent/{cid}/deny", headers=_auth())
-    resp = client.post(f"/screen/consent/{cid}/approve", headers=_auth())
+    client.post(f"/screen/consent/{cid}/deny", headers=_approval())
+    resp = client.post(f"/screen/consent/{cid}/approve", headers=_approval())
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "consent_denied"
 
@@ -642,7 +654,7 @@ def _request_webcam_consent(client: TestClient) -> str:
 
 
 def _approve_webcam(client: TestClient, consent_id: str) -> None:
-    resp = client.post(f"/webcam/consent/{consent_id}/approve", headers=_auth())
+    resp = client.post(f"/webcam/consent/{consent_id}/approve", headers=_approval())
     assert resp.status_code == 200
     assert resp.json() == {"consent_id": consent_id, "status": "approved"}
 
@@ -704,7 +716,7 @@ def test_webcam_refuses_while_pending(app_lan) -> None:
 def test_webcam_refuses_when_denied(app_lan) -> None:
     client = TestClient(app_lan)
     cid = _request_webcam_consent(client)
-    denied = client.post(f"/webcam/consent/{cid}/deny", headers=_auth())
+    denied = client.post(f"/webcam/consent/{cid}/deny", headers=_approval())
     assert denied.status_code == 200
     assert denied.json()["status"] == "denied"
     resp = client.get(f"/webcam?consent_id={cid}", headers=_auth())
@@ -729,7 +741,12 @@ def test_webcam_consent_endpoints_far_mode_forbidden(app_bt) -> None:
 
 def test_webcam_approve_unknown_consent_404(app_lan) -> None:
     client = TestClient(app_lan)
-    resp = client.post("/webcam/consent/does-not-exist/approve", headers=_auth())
+    # Phone-token-only approval fails closed before the existence check.
+    denied = client.post("/webcam/consent/does-not-exist/approve", headers=_auth())
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "approval_forbidden"
+    # Laptop-side approval reaches the 404.
+    resp = client.post("/webcam/consent/does-not-exist/approve", headers=_approval())
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "not_found"
 
@@ -737,8 +754,8 @@ def test_webcam_approve_unknown_consent_404(app_lan) -> None:
 def test_webcam_approve_after_deny_conflicts(app_lan) -> None:
     client = TestClient(app_lan)
     cid = _request_webcam_consent(client)
-    client.post(f"/webcam/consent/{cid}/deny", headers=_auth())
-    resp = client.post(f"/webcam/consent/{cid}/approve", headers=_auth())
+    client.post(f"/webcam/consent/{cid}/deny", headers=_approval())
+    resp = client.post(f"/webcam/consent/{cid}/approve", headers=_approval())
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "consent_denied"
 

@@ -37,12 +37,14 @@ from server.main import (
 )
 
 TOKEN = "test-token-123"
+APPROVAL_SECRET = "b2" * 32  # 64-hex deterministic (Track A3 laptop-only approval)
 
 
 def _security(path, mode="lan_only", extra: dict | None = None) -> None:
     doc = {
         "auth": {
             "token": TOKEN,
+            "consent_approval_secret": APPROVAL_SECRET,
             "max_failed_attempts": 5,
             "lockout_minutes": 15,
             "idle_timeout_minutes": 60,
@@ -61,6 +63,11 @@ def _auth(extra: dict | None = None) -> dict:
     if extra:
         h.update(extra)
     return h
+
+
+def _approval() -> dict:
+    """Laptop-side approval header (Track A3: phone token alone is 403)."""
+    return _auth({"X-Buddy-Approval": APPROVAL_SECRET})
 
 
 def _tiny_jpeg(color: str = "red") -> bytes:
@@ -123,7 +130,7 @@ async def test_stream_stops_midstream_when_ceiling_hits(tmp_path, monkeypatch) -
     monkeypatch.setattr(streams, "TARGET_FPS", 1000.0)
     client = TestClient(app)
     cid = client.post("/screen/consent", headers=_auth()).json()["consent_id"]
-    assert client.post(f"/screen/consent/{cid}/approve", headers=_auth()).status_code == 200
+    assert client.post(f"/screen/consent/{cid}/approve", headers=_approval()).status_code == 200
 
     state = app.state.auth_state
     # Expire mid-stream: initial auth sees a live token, ticks see an old one.
@@ -218,7 +225,7 @@ async def test_idle_not_refreshed_by_streams_when_flag_false(tmp_path, monkeypat
     monkeypatch.setattr("server.main.touch_activity", counting_touch)
     client = TestClient(app)
     cid = client.post("/screen/consent", headers=_auth()).json()["consent_id"]
-    assert client.post(f"/screen/consent/{cid}/approve", headers=_auth()).status_code == 200
+    assert client.post(f"/screen/consent/{cid}/approve", headers=_approval()).status_code == 200
 
     state = app.state.auth_state
     # Increasing clock: each now() call advances 5s. Initial stream auth stamps
