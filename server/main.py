@@ -334,6 +334,79 @@ def create_app(
             "rssi_near_threshold": prox_cfg.get("rssi_near_threshold", -60),
         }
 
+    @app.post("/proximity/threshold")
+    def proximity_threshold(body: dict, _auth: AuthState = Depends(require_near)) -> dict:
+        """Update the BLE RSSI near threshold (near-only, Sprint 2.3).
+
+        The value is UX-only downstream: the phone fetches it via
+        GET /proximity and applies it locally to its BLE readings (the
+        X-RSSI it sends back stays decorative — human decision 1). The
+        endpoint still requires full auth (token + near) because an
+        unauthenticated config-write is a DoS/annoyance vector.
+
+        Validation is strict and fails closed with 400 ``bad_request``:
+        the value must be of JSON/int type (``type(value) is int`` —
+        floats, numeric strings, and bools are REJECTED even when they
+        would coerce losslessly, to avoid ambiguity about what the phone
+        actually measured) and satisfy -100 <= value <= -30 (sane BLE
+        dBm bounds; anything outside is nonsense, not a threshold).
+
+        Persists to the SAME security.yaml file this app was created
+        with (``security_path``), updating ONLY
+        ``proximity.rssi_near_threshold`` and preserving all other keys
+        (comments are lost — yaml.safe_load/safe_dump round-trip — keys
+        are not), via atomic write (tmp file + rename). The in-memory
+        ``prox_cfg`` is mutated too, so GET /proximity in this process
+        reflects the new value without a restart.
+        """
+        value = body.get("rssi_near_threshold") if isinstance(body, dict) else None
+        # Strict int: bool is a subclass of int, so `isinstance(True, int)`
+        # is True — `type(value) is int` rejects True/False explicitly.
+        if type(value) is not int:
+            raise _http_error(
+                400,
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "rssi_near_threshold must be an integer dBm value (strict int, -100..-30)",
+                    }
+                },
+            )
+        if not -100 <= value <= -30:
+            raise _http_error(
+                400,
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "rssi_near_threshold out of range: must satisfy -100 <= value <= -30",
+                    }
+                },
+            )
+        sec_path = Path(security_path)
+        sec_path.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {}
+        if sec_path.exists():
+            try:
+                loaded = yaml.safe_load(sec_path.read_text(encoding="utf-8")) or {}
+            except yaml.YAMLError:
+                loaded = {}
+            if isinstance(loaded, dict):
+                data = loaded
+        prox = data.get("proximity")
+        if not isinstance(prox, dict):
+            prox = {}
+            data["proximity"] = prox
+        prox["rssi_near_threshold"] = value
+        tmp_path = sec_path.with_name(sec_path.name + ".tmp")
+        tmp_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+        try:
+            tmp_path.chmod(0o600)
+        except OSError:
+            pass  # Windows ACLs — file still gitignored; see .gitignore
+        tmp_path.replace(sec_path)
+        prox_cfg["rssi_near_threshold"] = value
+        return {"mode": prox_cfg.get("mode", "lan_only"), "rssi_near_threshold": value}
+
     @app.post("/command")
     def command(body: dict, background: BackgroundTasks, _auth: AuthState = Depends(require_near)) -> dict:
         from buddy_core import orchestrator
