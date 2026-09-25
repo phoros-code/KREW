@@ -208,6 +208,74 @@ def test_screen_needs_auth_and_consent(app_lan) -> None:
     assert resp.json()["error"]["code"] == "consent_required"
 
 
+def test_proximity_threshold_needs_token(app_lan) -> None:
+    client = TestClient(app_lan)
+    resp = client.post("/proximity/threshold", json={"rssi_near_threshold": -65})
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "unauthorized"
+
+
+def test_proximity_threshold_far_forbidden(app_bt) -> None:
+    client = TestClient(app_bt)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    # No X-RSSI in lan_plus_bluetooth -> far -> 403 (same shape as /command).
+    resp = client.post("/proximity/threshold", json={"rssi_near_threshold": -65}, headers=auth)
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
+    # A weak/absent signal is far too — below the -60 default threshold.
+    resp = client.post(
+        "/proximity/threshold",
+        json={"rssi_near_threshold": -65},
+        headers={**auth, "X-RSSI": "-80"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
+
+
+def test_proximity_threshold_rejects_out_of_range(app_lan) -> None:
+    client = TestClient(app_lan)
+    auth = {"Authorization": f"Bearer {TOKEN}"}  # lan_only: near without X-RSSI
+    for bad in (-20, -120, "nonsense", 12.5):
+        resp = client.post("/proximity/threshold", json={"rssi_near_threshold": bad}, headers=auth)
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]["code"] == "bad_request"
+    # Missing key -> 400, not 422.
+    resp = client.post("/proximity/threshold", json={}, headers=auth)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "bad_request"
+    # Strict-int choice: numeric strings (even parseable ones), bools
+    # (subclass of int), and null are all rejected — no coercion ambiguity.
+    for bad in ("-65", True, False, None):
+        resp = client.post("/proximity/threshold", json={"rssi_near_threshold": bad}, headers=auth)
+        assert resp.status_code == 400, bad
+        assert resp.json()["error"]["code"] == "bad_request"
+
+
+def test_proximity_threshold_updates_and_persists(tmp_path) -> None:
+    sec = tmp_path / "security.yaml"
+    _security(sec, "lan_plus_bluetooth")
+    log = tmp_path / "events.jsonl"
+    app = create_app(security_path=sec, event_log=log)
+    client = TestClient(app)
+    near = {"Authorization": f"Bearer {TOKEN}", "X-RSSI": "-50"}
+    resp = client.post("/proximity/threshold", json={"rssi_near_threshold": -65}, headers=near)
+    assert resp.status_code == 200
+    assert resp.json() == {"mode": "lan_plus_bluetooth", "rssi_near_threshold": -65}
+    # Same process, no restart: GET reflects the new value.
+    resp = client.get("/proximity", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp.status_code == 200
+    assert resp.json()["rssi_near_threshold"] == -65
+    # On disk: threshold updated, every other key preserved.
+    on_disk = yaml.safe_load(sec.read_text(encoding="utf-8"))
+    assert on_disk["proximity"]["rssi_near_threshold"] == -65
+    assert on_disk["proximity"]["mode"] == "lan_plus_bluetooth"
+    assert on_disk["auth"]["token"] == TOKEN
+    # Survives restart: a fresh app on the same file serves the new value.
+    app2 = create_app(security_path=sec, event_log=log)
+    resp2 = TestClient(app2).get("/proximity", headers={"Authorization": f"Bearer {TOKEN}"})
+    assert resp2.json()["rssi_near_threshold"] == -65
+
+
 def test_expired_token_gets_scoped_401_code(tmp_path) -> None:
     """Absolute ceiling surfaces per-connection as 401 token_expired.
 
