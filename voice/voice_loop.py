@@ -21,7 +21,10 @@ RECORD_SECONDS = 6
 class LoopConfig:
     record_seconds: int = RECORD_SECONDS
     min_confidence: float = MIN_CONFIDENCE
-    reply_wav: str = "reply.wav"
+    # None (default) → the reply is synthesized to a file inside an ephemeral
+    # TemporaryDirectory, so no reply.wav is ever dropped in the repo root /
+    # CWD. Pass an explicit path (tests, debugging) to keep the file.
+    reply_wav: str | Path | None = None
 
 
 def record_wav(path: str | Path, seconds: int = RECORD_SECONDS, sample_rate: int = 16000) -> Path:
@@ -58,24 +61,34 @@ def handle_utterance(wav_path: str | Path, config: LoopConfig | None = None) -> 
     from voice import stt, tts
 
     cfg = config or LoopConfig()
+    tmpdir: tempfile.TemporaryDirectory | None = None
+    if cfg.reply_wav is None:
+        tmpdir = tempfile.TemporaryDirectory(prefix="buddy-reply-")
+        reply_path = Path(tmpdir.name) / "reply.wav"
+    else:
+        reply_path = Path(cfg.reply_wav)
     try:
-        heard = stt.transcribe(str(wav_path))
-    except Exception:
-        tts.speak(FALLBACK_FAILED, cfg.reply_wav)
-        return FALLBACK_FAILED
-    if not heard.text or heard.confidence < cfg.min_confidence:
-        tts.speak(FALLBACK_EMPTY, cfg.reply_wav)
-        return FALLBACK_EMPTY
-    try:
-        # Latency-first: voice UX reads a multi-second gap as broken, so the
-        # orchestrator prefers voice_model (qwen2.5:3b) for this path.
-        result = orchestrator.run(heard.text, source="voice")
-    except Exception:
-        tts.speak(FALLBACK_FAILED, cfg.reply_wav)
-        return FALLBACK_FAILED
-    reply = result.output if result.ok else FALLBACK_FAILED
-    tts.speak(reply, cfg.reply_wav)
-    return reply
+        try:
+            heard = stt.transcribe(str(wav_path))
+        except Exception:
+            tts.speak(FALLBACK_FAILED, reply_path)
+            return FALLBACK_FAILED
+        if not heard.text or heard.confidence < cfg.min_confidence:
+            tts.speak(FALLBACK_EMPTY, reply_path)
+            return FALLBACK_EMPTY
+        try:
+            # Latency-first: voice UX reads a multi-second gap as broken, so the
+            # orchestrator prefers voice_model (qwen2.5:3b) for this path.
+            result = orchestrator.run(heard.text, source="voice")
+        except Exception:
+            tts.speak(FALLBACK_FAILED, reply_path)
+            return FALLBACK_FAILED
+        reply = result.output if result.ok else FALLBACK_FAILED
+        tts.speak(reply, reply_path)
+        return reply
+    finally:
+        if tmpdir is not None:
+            tmpdir.cleanup()
 
 
 def main() -> int:
