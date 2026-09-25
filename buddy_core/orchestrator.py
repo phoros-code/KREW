@@ -29,6 +29,7 @@ from buddy_core.agents.planner import (
     resolve_launch_intent,
 )
 from buddy_core.agents.coder import resolve_code_target as coder_resolve_target
+from buddy_core.agents.executor import redact_event_args
 from buddy_core.config import load_apps_config, load_models_config, load_tools_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +37,10 @@ EVENT_LOG = REPO_ROOT / "logs" / "events.jsonl"
 
 # Explicit client timeout (Track A1): no unbounded Ollama call from /command.
 OLLAMA_TIMEOUT_SECONDS = 60
+
+# Bounded log (Track A2): rotate events.jsonl at 5MB, keep 1 ".1" backup.
+# Monkeypatchable in tests (small threshold forces rotation without 5MB I/O).
+EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
 
 
 @dataclass
@@ -47,8 +52,24 @@ class TaskResult:
 
 
 def _log_event(event_type: str, payload: dict) -> None:
-    """Append one agent-lifecycle event (API.md shapes) to logs/events.jsonl."""
+    """Append one agent-lifecycle event (API.md shapes) to logs/events.jsonl.
+
+    Track A2 — bounded log: if the file is at/over EVENT_LOG_MAX_BYTES,
+    rotate it to ``events.jsonl.1`` (single backup, overwrite) before
+    appending, so the log never grows unbounded. Tool-call args are
+    assumed already redacted by the caller via
+    ``executor.redact_event_args`` — this function never expands them.
+    """
     EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if EVENT_LOG.exists() and EVENT_LOG.stat().st_size >= EVENT_LOG_MAX_BYTES:
+            backup = EVENT_LOG.with_name(EVENT_LOG.name + ".1")
+            try:
+                EVENT_LOG.replace(backup)
+            except OSError:
+                pass
+    except OSError:
+        pass
     record = {"type": event_type, "at": datetime.now(timezone.utc).isoformat(), **payload}
     with EVENT_LOG.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -130,7 +151,10 @@ def _run_launch(
     """Execute a launch_app plan: resolve key -> validate -> fire-and-forget."""
     from buddy_core.tools import launch_app
 
-    _log_event("tool_call", {"task_id": task_id, "tool": "launch_app", "args": {"app_key": app_key}})
+    _log_event(
+        "tool_call",
+        {"task_id": task_id, "tool": "launch_app", "args": redact_event_args("launch_app", {"app_key": app_key})},
+    )
     try:
         result = launch_app.launch(app_key, apps_cfg, tools_cfg)
     except launch_app.AppNotFound as exc:
@@ -162,7 +186,7 @@ def _is_launch_verb(command: str) -> bool:
 def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits) -> TaskResult:
     from buddy_core.tools import launch_app
 
-    _log_event("tool_call", {"task_id": task_id, "tool": "list_apps", "args": {}})
+    _log_event("tool_call", {"task_id": task_id, "tool": "list_apps", "args": redact_event_args("list_apps", {})})
     entries = launch_app.list_apps(apps_cfg)
     out = "\n".join(entries) if entries else "No apps are registered in config/apps.yaml."
     _log_event("task_completed", {"task_id": task_id, "result": out[:2000]})
@@ -198,19 +222,34 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
 
     source: "text" (default, POST /command — quality-first) or "voice"
     (voice_loop — latency-first, prefers voice_model). See _pick_model.
+
+    Track A2 — no silent task loss: task_started + config loads live INSIDE
+    the try block, so a corrupt config or a failed log write still emits
+    task_failed instead of raising. Empty commands emit task_failed (with
+    the text echoed truncated) instead of returning silently.
     """
     task_id = task_id or uuid.uuid4().hex[:12]
-    command = command.strip()
-    if not command:
-        return TaskResult(ok=False, output="Empty command.", task_id=task_id)
-    _log_event("task_started", {"task_id": task_id, "text": command, "source": source})
-
-    models = load_models_config()
-    tools_cfg = load_tools_config()
-    apps_cfg = load_apps_config()
-    limits = tools_cfg.agent_limits
-
     try:
+        command = command.strip() if isinstance(command, str) else ""
+    except Exception:
+        command = ""
+    if not command:
+        try:
+            _log_event(
+                "task_failed",
+                {"task_id": task_id, "error": "Empty command.", "text": command[:200]},
+            )
+        except Exception:
+            pass
+        return TaskResult(ok=False, output="Empty command.", task_id=task_id)
+    try:
+        _log_event("task_started", {"task_id": task_id, "text": command, "source": source})
+
+        models = load_models_config()
+        tools_cfg = load_tools_config()
+        apps_cfg = load_apps_config()
+        limits = tools_cfg.agent_limits
+
         app_key = resolve_launch_intent(command, apps_cfg)
         if app_key:
             return _run_launch(task_id, app_key, apps_cfg, tools_cfg, limits)
@@ -230,7 +269,10 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
         plan = build_research_plan(command, limits)
         validate_plan(plan, limits)
     except Exception as exc:
-        _log_event("task_failed", {"task_id": task_id, "error": str(exc)})
+        try:
+            _log_event("task_failed", {"task_id": task_id, "error": str(exc)})
+        except Exception:
+            pass
         return TaskResult(ok=False, output=f"Plan rejected: {exc}", task_id=task_id)
 
     steps_taken = 0
@@ -244,7 +286,10 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
 
         # Step 1 — typed web_search call (no raw LLM text involved).
         step = plan.steps[0]
-        _log_event("tool_call", {"task_id": task_id, "tool": "web_search", "args": step.args})
+        _log_event(
+            "tool_call",
+            {"task_id": task_id, "tool": "web_search", "args": redact_event_args("web_search", step.args)},
+        )
         hits = web_search.search(step.args["query"], tools_cfg.web_search, max_results=step.args.get("max_results", 5))
         steps_taken += 1
         if not hits:
@@ -256,7 +301,10 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
         fetch_args = plan.steps[1].args
         context_parts: list[str] = []
         for hit in hits[: int(fetch_args.get("max_pages", 2))]:
-            _log_event("tool_call", {"task_id": task_id, "tool": "fetch_page", "args": {"url": hit.url}})
+            _log_event(
+                "tool_call",
+                {"task_id": task_id, "tool": "fetch_page", "args": redact_event_args("fetch_page", {"url": hit.url})},
+            )
             try:
                 body = web_search.fetch_page_text(hit.url, max_chars=int(fetch_args.get("max_chars", 8000)))
             except Exception as exc:
