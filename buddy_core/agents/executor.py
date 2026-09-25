@@ -19,9 +19,44 @@ from buddy_core.agents.planner import Plan, validate_plan
 from buddy_core.config import ToolsConfig
 from buddy_core.tools import files, shell
 
+import hashlib
+
 # Executor scope per ARCHITECTURE.md — research tools stay in the
 # orchestrator's research flow; the executor only does shell + files.
 EXECUTOR_TOOLS = frozenset({"shell", "read_file", "write_file", "list_dir"})
+
+
+def _redact_text_value(value: str) -> dict:
+    """Describe a sensitive body without storing it (SECURITY.md).
+
+    Returns ``{"length": N, "sha256": "…"}`` so the log/SSE proves *what*
+    was sent (size + hash for debugging) without ever containing the full
+    file contents or full command text.
+    """
+    raw = value.encode("utf-8", errors="replace")
+    return {"length": len(value), "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+def redact_event_args(tool: str, args: dict[str, Any] | None) -> dict[str, Any]:
+    """Redact sensitive bodies before ANY event emission (Track A2).
+
+    Replaces ``args["content"]`` (write_file) and ``args["command"]``
+    (shell) string bodies with ``{"length": N, "sha256": "…"}``. All other
+    keys pass through unchanged. Always returns a NEW dict — the caller's
+    original is never mutated (the plan still executes with full values;
+    only the emitted event is redacted).
+
+    ``tool`` is accepted for future per-tool rules; currently both keys
+    are redacted regardless of tool so no emit site can leak by mistake.
+    """
+    if not isinstance(args, dict):
+        return {}
+    redacted = dict(args)
+    for key in ("content", "command"):
+        val = redacted.get(key)
+        if isinstance(val, str):
+            redacted[key] = _redact_text_value(val)
+    return redacted
 
 
 @dataclass
@@ -84,7 +119,7 @@ def execute_plan(
             msg = f"Tool {step.tool!r} is outside executor scope — stopping"
             transcript.append({"tool": step.tool, "ok": False, "error": msg})
             return ExecutorResult(ok=False, output=msg, steps_taken=steps_taken, transcript=transcript)
-        emit("tool_call", {"task_id": task_id, "tool": step.tool, "args": step.args})
+        emit("tool_call", {"task_id": task_id, "tool": step.tool, "args": redact_event_args(step.tool, step.args)})
         try:
             out = _run_step(step.tool, step.args, tools_cfg)
         except Exception as exc:  # noqa: BLE001 — fail-fast, report, stop

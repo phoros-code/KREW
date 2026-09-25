@@ -20,6 +20,8 @@ from dataclasses import dataclass
 
 from buddy_core.config import ShellConfig
 
+import hashlib
+
 # Independent of config/tools.yaml — always blocked (SECURITY.md).
 # NOTE: "&" covers both lone-& (cmd.exe chaining: `a & b`) and "&&";
 # "|" likewise covers "||". "\x00" turns a would-be ValueError from
@@ -40,6 +42,18 @@ class LaunchDenied(ShellDenied):
         self.argv = argv
 
 
+def _redact_descriptor(command: str) -> str:
+    """Describe a blocked command without echoing it (Track A2).
+
+    events.jsonl and SSE must never contain full command text
+    (SECURITY.md) — ShellDenied messages previously embedded ``{cmd!r}``,
+    which leaked the full body into task_failed error fields. Now only
+    length + sha256 are emitted; the raw text never leaves this function.
+    """
+    raw = command.encode("utf-8", errors="replace")
+    return f"length={len(command)} sha256={hashlib.sha256(raw).hexdigest()}"
+
+
 def _matches(command: str, patterns: list[str], case_insensitive: bool = False) -> str | None:
     """Return the first matching pattern, or None."""
     text = command.lower() if case_insensitive else command
@@ -56,11 +70,11 @@ def check_allowed(command: str, config: ShellConfig) -> None:
     if not cmd:
         raise ShellDenied("Empty command")
     if _matches(cmd, config.denylist, case_insensitive=True):
-        raise ShellDenied(f"Blocked by denylist: {cmd!r}")
+        raise ShellDenied(f"Blocked by denylist ({_redact_descriptor(cmd)})")
     if any(c in cmd for c in _BUILTIN_DENY_CHARS):
-        raise ShellDenied(f"Blocked: shell metacharacters not allowed: {cmd!r}")
+        raise ShellDenied(f"Blocked: shell metacharacters not allowed ({_redact_descriptor(cmd)})")
     if not _matches(cmd, config.allowlist):
-        raise ShellDenied(f"Not in allowlist: {cmd!r}")
+        raise ShellDenied(f"Not in allowlist ({_redact_descriptor(cmd)})")
 
 
 def is_allowed(command: str, config: ShellConfig) -> bool:
@@ -126,7 +140,7 @@ def launch_detached(exe_path: str, args: list[str] | None = None) -> ShellResult
     argv = [exe_path, *(args or [])]
     for token in argv:
         if any(ch in token for ch in _BUILTIN_DENY_CHARS):
-            raise LaunchDenied(f"Blocked: shell metacharacters not allowed: {token!r}", argv)
+            raise LaunchDenied(f"Blocked: shell metacharacters not allowed ({_redact_descriptor(token)})", argv)
     if not os.path.isabs(exe_path):
         raise LaunchDenied(f"Launcher must be an absolute path: {exe_path!r}", argv)
     if not os.path.isfile(exe_path):
