@@ -49,6 +49,7 @@ Don't try to force these into pytest — verify them by hand, but track that you
      `GET /screen?consent_id=<id2>` → 403 `{"code": "consent_denied", ...}` —
      the phone must never show imagery for a denied id.
 - TLS setup — verify the phone app actually rejects an untrusted cert, don't just assume `mkcert` wired correctly
+- Webcam hardware check mirrors the screen curl sequence above with `/webcam` paths (`/webcam/consent` → 403-gated `GET /webcam?consent_id=…` → approve → 200 MJPEG → deny/revoke → 403).
 
 ## UI testing
 
