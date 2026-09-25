@@ -30,6 +30,13 @@ def _load_yaml(name: str) -> dict[str, Any]:
 
 
 @dataclass
+class WakeConfig:
+    stand_in: str = "alexa"
+    custom_model: str = "voice/models/maxy.onnx"
+    threshold: float = 0.5
+
+
+@dataclass
 class ModelsConfig:
     host: str = "http://localhost:11434"
     dev_model: str = "qwen2.5:3b"
@@ -38,6 +45,12 @@ class ModelsConfig:
     # Fast model for the voice loop (latency-sensitive). Text/API requests
     # default to target_model (quality); voice requests default here.
     voice_model: str = "qwen2.5:3b"
+    # Wake-word routing. stand_in is the openWakeWord pre-trained name used
+    # until the custom model file exists; custom_model is its repo-relative
+    # path; threshold is the detection score cutoff.
+    wake_stand_in: str = "alexa"
+    wake_custom_model: str = "voice/models/maxy.onnx"
+    wake_threshold: float = 0.5
 
 
 @dataclass
@@ -87,12 +100,16 @@ class ToolsConfig:
 def load_models_config(path: str | Path | None = None) -> ModelsConfig:
     data = _load_yaml(Path(path).name if path else "models.yaml")
     ollama = data.get("ollama", data)
+    wake = data.get("wake") or {}  # missing section -> defaults (backwards compat)
     return ModelsConfig(
         host=ollama.get("host", ModelsConfig.host),
         dev_model=ollama.get("dev_model", ModelsConfig.dev_model),
         target_model=ollama.get("target_model", ModelsConfig.target_model),
         fallback_model=ollama.get("fallback_model", ModelsConfig.fallback_model),
         voice_model=ollama.get("voice_model", ModelsConfig.voice_model),
+        wake_stand_in=wake.get("stand_in", ModelsConfig.wake_stand_in),
+        wake_custom_model=wake.get("custom_model", ModelsConfig.wake_custom_model),
+        wake_threshold=float(wake.get("threshold", ModelsConfig.wake_threshold)),
     )
 
 
