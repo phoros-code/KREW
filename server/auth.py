@@ -9,7 +9,10 @@ tests (CLAUDE.md rule 6).
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +21,14 @@ from typing import Callable
 import yaml
 
 from buddy_core.config import CONFIG_DIR
+
+# Single module-level lock shared by ALL security.yaml writers: threshold
+# write (server/main.py), _persist_auth_file, and the rotate() path.
+# Guarantees concurrent threshold+persist/rotate never interleave a
+# read-modify-write into a corrupt or half-merged file. threading.Lock
+# (not RLock): callers must not nest — _atomic_write_yaml assumes the lock
+# is already held; _persist_auth_file acquires it once.
+_SECURITY_WRITE_LOCK = threading.Lock()
 
 SECURITY_PATH = CONFIG_DIR / "security.yaml"
 
@@ -80,13 +91,43 @@ class AuthSettings:
     issued_at: datetime | None = None
 
 
-def _persist_auth_file(path: Path, data: dict) -> None:
+def _atomic_write_yaml(path: Path, data: dict) -> None:
+    """Atomically replace `path` with `data` (YAML). Caller holds _SECURITY_WRITE_LOCK.
+
+    Unique tmp name via tempfile.mkstemp (no fixed ".tmp" collision), fsync
+    before rename so a crash can't leave a truncated file, chmod 0600,
+    then atomic os.replace. Cleans up the tmp file on failure.
+    """
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=path.name + ".", suffix=".tmp"
+    )
     try:
-        path.chmod(0o600)
-    except OSError:
-        pass  # Windows ACLs — file still gitignored; see .gitignore
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(yaml.safe_dump(data))
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass  # e.g. in-memory filesystems in tests
+        try:
+            os.chmod(tmp_name, 0o600)
+        except OSError:
+            pass  # Windows ACLs — file still gitignored; see .gitignore
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _persist_auth_file(path: Path, data: dict) -> None:
+    path = Path(path)
+    with _SECURITY_WRITE_LOCK:
+        _atomic_write_yaml(path, data)
 
 
 def load_auth_settings(path: str | Path = SECURITY_PATH) -> AuthSettings:
@@ -94,7 +135,10 @@ def load_auth_settings(path: str | Path = SECURITY_PATH) -> AuthSettings:
     path = Path(path)
     data: dict = {}
     if path.exists():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            raise RuntimeError(f"corrupt security config: {path}: {exc}") from exc
     auth = data.get("auth", data)
     issued_at = _parse_issued_at(auth.get("issued_at"))
     settings = AuthSettings(
@@ -132,8 +176,13 @@ class AuthState:
     """In-memory attempt tracking. One instance per server process."""
 
     settings: AuthSettings
-    failed_attempts: int = 0
-    locked_until: datetime | None = None
+    # Per-client-IP lockout state (Track A1). Keys are client IPs
+    # ("unknown" when the transport supplies none). A noisy or hostile IP
+    # can lock ITSELF out after max_failed_attempts, but never another IP.
+    # Backwards compat: verify()/is_locked() default to the "unknown" key,
+    # so existing single-IP call sites keep working unchanged.
+    failed_attempts: dict[str, int] = field(default_factory=dict)
+    locked_until: dict[str, datetime | None] = field(default_factory=dict)
     last_activity: datetime | None = None
     # Test override for issuance time; falls back to settings.issued_at.
     issued_at: datetime | None = None
@@ -157,8 +206,20 @@ class AuthState:
             return self.issued_at
         return self.settings.issued_at
 
-    def is_locked(self) -> bool:
-        return self.locked_until is not None and self.now() < self.locked_until
+    @staticmethod
+    def _ip_key(client_ip: str | None) -> str:
+        return client_ip if client_ip else "unknown"
+
+    def is_locked(self, client_ip: str | None = None) -> bool:
+        """Per-IP lockout check. None (legacy call) = ANY IP locked."""
+        if client_ip is None:
+            now = self.now()
+            return any(
+                until is not None and now < until for until in self.locked_until.values()
+            )
+        key = self._ip_key(client_ip)
+        until = self.locked_until.get(key)
+        return until is not None and self.now() < until
 
     def is_idle_expired(self) -> bool:
         if self.last_activity is None:
@@ -195,14 +256,19 @@ class AuthState:
         except Exception:
             pass
 
-    def verify_with_code(self, token: str) -> tuple[bool, str]:
+    def verify_with_code(self, token: str, client_ip: str | None = None) -> tuple[bool, str]:
         """Check a bearer token, labelling WHY it failed.
 
         Codes: "ok" | "locked_out" | "token_expired" | "idle_expired" |
         "unauthorized". Lets the caller return a per-connection 401 code for
         the ceiling (scoped signal) instead of overloading the broadcast log.
+
+        Lockout is per client IP: `client_ip` selects the failure bucket
+        (None/"" → "unknown"). Success clears ONLY that IP's bucket; a wrong
+        token increments ONLY that IP's counter.
         """
-        if self.is_locked():
+        key = self._ip_key(client_ip)
+        if self.is_locked(key):
             return False, "locked_out"
         # Absolute ceiling only applies to the real token — a wrong token takes
         # the normal failure path with no event (avoids leaking expiry + log flood).
@@ -216,20 +282,21 @@ class AuthState:
                 return False, "token_expired"
             if self.is_idle_expired():
                 return False, "idle_expired"
-            self.failed_attempts = 0
-            self.locked_until = None
+            self.failed_attempts.pop(key, None)
+            self.locked_until.pop(key, None)
             self.last_activity = self.now()
             return True, "ok"
         if self.is_idle_expired():
             return False, "idle_expired"
-        self.failed_attempts += 1
-        if self.failed_attempts >= self.settings.max_failed_attempts:
-            self.locked_until = self.now() + timedelta(minutes=self.settings.lockout_minutes)
+        count = self.failed_attempts.get(key, 0) + 1
+        self.failed_attempts[key] = count
+        if count >= self.settings.max_failed_attempts:
+            self.locked_until[key] = self.now() + timedelta(minutes=self.settings.lockout_minutes)
         return False, "unauthorized"
 
-    def verify(self, token: str) -> bool:
+    def verify(self, token: str, client_ip: str | None = None) -> bool:
         """Check a bearer token. True on success (resets failures, stamps activity)."""
-        ok, _ = self.verify_with_code(token)
+        ok, _ = self.verify_with_code(token, client_ip)
         return ok
 
     def rotate(self, path: str | Path = SECURITY_PATH) -> str:
@@ -238,16 +305,31 @@ class AuthState:
         self.settings.token = new_token
         self.settings.issued_at = self.now()
         self.issued_at = None  # fall back to settings.issued_at from here on
-        self.failed_attempts = 0
-        self.locked_until = None
+        if isinstance(self.failed_attempts, dict):
+            self.failed_attempts.clear()
+        else:  # pragma: no cover — legacy int shape, never written now
+            self.failed_attempts = {}  # type: ignore[assignment]
+        if isinstance(self.locked_until, dict):
+            self.locked_until.clear()
+        else:  # pragma: no cover — legacy shape
+            self.locked_until = {}  # type: ignore[assignment]
         self.last_activity = None
         self._emitted_for_token = None  # new token gets its own one-time notice
         self.absolute_expired_retries = 0
         path = Path(path)
-        data: dict = {}
-        if path.exists():
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        data.setdefault("auth", {})["token"] = new_token
-        data["auth"]["issued_at"] = self.settings.issued_at.isoformat()
-        _persist_auth_file(path, data)
+        # Hold the shared write lock across read-modify-write so a
+        # concurrent threshold write can't interleave into a torn file.
+        # _atomic_write_yaml assumes the lock is held (no nested acquire).
+        with _SECURITY_WRITE_LOCK:
+            data: dict = {}
+            if path.exists():
+                try:
+                    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                except yaml.YAMLError:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+            data.setdefault("auth", {})["token"] = new_token
+            data["auth"]["issued_at"] = self.settings.issued_at.isoformat()
+            _atomic_write_yaml(path, data)
         return new_token
