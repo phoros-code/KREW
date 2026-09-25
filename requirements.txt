@@ -1,5 +1,5 @@
 # Pinned working set for the default (3.14) interpreter.
-# The 3.12 venv (venv312/) installs the same + crewai — see pip312.log.
+# The 3.12 venv (venv312/) installs the same + crewai -- see pip312.log.
 # CrewAI is intentionally absent here: its pinned langchain requires numpy<2,
 # which has no Python 3.14 wheel. Use venv312 for CrewAI work.
 annotated-doc==0.0.5
@@ -17,6 +17,11 @@ idna==3.20
 iniconfig==2.3.0
 mss==10.2.0
 numpy==2.5.3
+# Unpinned on purpose: opencv is installed in neither interpreter, so the
+# freshly-resolving version could not be verified without installing (index
+# latest was 5.0.0.93); floor matches pyproject's opencv-python>=4.8.0.
+# Re-pin exact after the first real install on the 3.14 interpreter.
+opencv-python>=4.8.0
 ollama==0.6.2
 packaging==26.3
 pillow==12.3.0
