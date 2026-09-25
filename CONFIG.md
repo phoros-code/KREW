@@ -48,7 +48,6 @@ shell:
     - ":(){ :|:& };:"     # fork bomb
 files:
   workspace_root: "~/buddy-workspace"
-  allow_outside_workspace: false
 web_search:
   backend: "duckduckgo"   # or "searxng"
   searxng_url: ""          # required if backend is searxng
@@ -93,16 +92,16 @@ streams:                        # Track A3: read via load_streams_config with cu
   pending_ttl_seconds: 300      # unactioned consent request TTL
   grant_ttl_seconds: 900        # approved grant TTL (15 min)
   max_consent_records: 256      # hard cap on consent records
-tls:                            # consumed by scripts/serve.ps1 + gen_cert (paths), not by server/ loaders
-  cert_path: "certs/dev-cert.pem"
-  key_path: "certs/dev-key.pem"
+tls:                            # paths read by scripts/serve.ps1 (+ written by gen_cert.py --out-dir); not by server/ loaders
+  cert_path: "certs/dev-cert.pem"  # serve.ps1 falls back to certs\dev-cert.pem when absent
+  key_path: "certs/dev-key.pem"    # serve.ps1 falls back to certs\dev-key.pem when absent
 proximity:
   mode: "lan_only"               # "lan_only" or "lan_plus_bluetooth"
   rssi_near_threshold: -60        # dBm; adjust after testing your own devices
-  fail_mode: "far"                # what to default to if the signal can't be read — never "near"
-network:
+  fail_mode: "far"                # undeterminable-signal default — "near" is rejected at load with a warning (fail closed, never near)
+network:                          # read by scripts/serve.ps1 + pair_device.py; hardcoded fallbacks (0.0.0.0 / 8443) when absent
   bind_host: "0.0.0.0"           # bound to LAN interface only; do not port-forward
-  bind_port: 8443                # NOTE: scripts/serve.ps1 currently hardcodes host/port — edit there, not just here
+  bind_port: 8443                # serve.ps1 binds this; pair_device.py prints this
   rate_limit_per_minute: 60  # enforced per client IP by middleware in server/main.py (429 rate_limited)
 ```
 

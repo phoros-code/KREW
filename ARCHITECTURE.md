@@ -20,21 +20,24 @@ Both paths converge on the same `orchestrator.run()` call — the voice loop and
 ## Module responsibilities
 
 ### `buddy_core/orchestrator.py`
-Owns the CrewAI crew definition and the single public `run(command: str) -> TaskResult` entrypoint. Nothing outside this file constructs agents directly — `voice_loop.py` and `server/main.py` both call `orchestrator.run()`, never the agents themselves.
+Owns the single public `run(command: str) -> TaskResult` entrypoint — CrewAI is a declared dependency but is not wired in; the orchestrator makes direct Ollama calls. Nothing outside this file constructs agents directly — `voice_loop.py` and `server/main.py` both call `orchestrator.run()`, never the agents themselves.
 
 ### `buddy_core/agents/`
 - `planner.py` — decomposes a command into a typed plan (a list of tool calls with arguments), capped by `config/tools.yaml`'s `max_steps` and `max_recursion_depth`. The plan is the only thing that ever reaches a tool — raw LLM text never does.
-- `coder.py`, `researcher.py`, `executor.py` — typed child agents, each scoped to one category of tool. An agent never calls a tool outside its declared category.
+- `coder.py`, `researcher.py`, `executor.py` — typed child agents, each scoped to one category of tool. An agent never calls a tool outside its declared category. `researcher.py` is a stub — the research flow (search → fetch → summarize) is inlined in `orchestrator.run()`, not a separate agent.
 
 ### `buddy_core/tools/`
 Every tool here is a narrow, testable function with an explicit allow/deny surface — see `SECURITY.md` for the full model.
 - `shell.py` — the only place `subprocess` is called anywhere in this codebase. Allowlist + denylist from `config/tools.yaml`.
 - `files.py` — read/write restricted to `~/buddy-workspace`; rejects path traversal.
 - `web_search.py` — DuckDuckGo HTML or self-hosted SearXNG; treats fetched page content as **data, not instructions** (a page telling the agent to "ignore previous instructions" is just text to summarize, never a command to follow).
-- `screen.py` — periodic screenshot capture via `mss`, gated behind the same consent flow as `/screen`.
+- `screen.py` — a stub (unimplemented); real screen capture lives in `server/streams.py` behind the `/screen` consent flow.
 
 ### `voice/`
 Thin glue only — `voice_loop.py` should contain no business logic, just wiring between `wake.py`, `stt.py`, `orchestrator.run()`, and `tts.py`.
+
+### `buddy_core/memory/`
+A stub — no conversation memory is persisted yet.
 
 ### `server/`
 - `main.py` — FastAPI app, all routes documented in `API.md`.
