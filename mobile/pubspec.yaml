@@ -12,7 +12,6 @@ dependencies:
   http: ^1.2.0
   crypto: ^3.0.3 # SHA-256 cert pinning in BuddyApi (SECURITY.md TLS)
   flutter_secure_storage: ^9.0.0
-  google_fonts: ^6.1.0
   flutter_blue_plus: ^2.3.12
   permission_handler: ^11.0.0 # BLE scan/connect runtime permission (Track A5.9)
   mjpeg_stream: ^1.0.0
@@ -24,3 +23,32 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # TODO-FONTS (Track C1): bundled TTFs pending — download is NOT available
+  # in this environment so google_fonts was removed (no runtime CDN).
+  # BuddyTheme uses TextStyle(fontFamily) preferring the DESIGN.md families
+  # with fontFamilyFallback ['Roboto']. When the TTFs land, uncomment:
+  #  assets:
+  #    - assets/fonts/
+  #  fonts:
+  #    - family: Space Grotesk
+  #      fonts:
+  #        - asset: assets/fonts/SpaceGrotesk-Regular.ttf
+  #        - asset: assets/fonts/SpaceGrotesk-Medium.ttf
+  #        - asset: assets/fonts/SpaceGrotesk-SemiBold.ttf
+  #          weight: 600
+  #        - asset: assets/fonts/SpaceGrotesk-Bold.ttf
+  #          weight: 700
+  #    - family: IBM Plex Sans
+  #      fonts:
+  #        - asset: assets/fonts/IBMPlexSans-Regular.ttf
+  #        - asset: assets/fonts/IBMPlexSans-Medium.ttf
+  #        - asset: assets/fonts/IBMPlexSans-SemiBold.ttf
+  #          weight: 600
+  #        - asset: assets/fonts/IBMPlexSans-Bold.ttf
+  #          weight: 700
+  #    - family: JetBrains Mono
+  #      fonts:
+  #        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+  #        - asset: assets/fonts/JetBrainsMono-Medium.ttf
+  #        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+  #          weight: 700

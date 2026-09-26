@@ -15,7 +15,6 @@ import 'package:everyday_buddy/widgets/status_header.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -61,10 +60,8 @@ class _DeferredClient extends http.BaseClient {
 Widget _frame(Widget child) => MaterialApp(home: Scaffold(body: child));
 
 void main() {
-  setUpAll(() {
-    // No font fetching in tests — fall back to the platform default.
-    GoogleFonts.config.allowRuntimeFetching = false;
-  });
+  // Track C1: google_fonts removed — BuddyTheme uses bundled-font names with
+  // Roboto fallback, no runtime fetching, so no test font config needed.
 
   group('A5.1 fresh-pair: 200 means connected, bar decoupled from events', () {
     test('watchEvents yields a synthetic connected frame first', () async {

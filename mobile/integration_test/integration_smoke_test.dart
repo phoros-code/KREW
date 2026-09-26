@@ -4,7 +4,6 @@ import 'package:everyday_buddy/app.dart';
 import 'package:everyday_buddy/services/secure_store.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 /// Minimal integration smoke (Track A6.14).
 ///
@@ -60,17 +59,15 @@ class _FailFastOverrides extends HttpOverrides {
 }
 
 void main() {
-  setUpAll(() {
-    // No font fetching in tests — fall back to the platform default.
-    GoogleFonts.config.allowRuntimeFetching = false;
-  });
+  // Track C1: google_fonts removed — no test font config needed.
 
   testWidgets('unpaired shell renders all 4 tabs', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(BuddyApp(store: _StubStore()));
     await tester.pumpAndSettle();
-    expect(find.byType(BottomNavigationBar), findsOneWidget);
+    // Track C1: M3 NavigationBar (not M2 BottomNavigationBar).
+    expect(find.byType(NavigationBar), findsOneWidget);
     for (final label in <String>['Pair', 'Chat', 'Tasks', 'Screen']) {
       expect(find.text(label), findsOneWidget, reason: label);
     }
@@ -97,7 +94,7 @@ void main() {
       await tester.pump();
     }
     await tester.pump(const Duration(milliseconds: 100));
-    expect(find.byType(BottomNavigationBar), findsOneWidget);
+    expect(find.byType(NavigationBar), findsOneWidget);
     for (final label in <String>['Pair', 'Chat', 'Tasks', 'Screen']) {
       expect(find.text(label), findsOneWidget, reason: label);
     }

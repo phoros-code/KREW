@@ -1,0 +1,5 @@
+TODO-FONTS (Track C1): bundled TTFs pending. Expected files (see pubspec.yaml commented fonts: block + DESIGN.md typography):
+SpaceGrotesk-Regular.ttf, SpaceGrotesk-Medium.ttf, SpaceGrotesk-SemiBold.ttf, SpaceGrotesk-Bold.ttf,
+IBMPlexSans-Regular.ttf, IBMPlexSans-Medium.ttf, IBMPlexSans-SemiBold.ttf, IBMPlexSans-Bold.ttf,
+JetBrainsMono-Regular.ttf, JetBrainsMono-Medium.ttf, JetBrainsMono-Bold.ttf.
+Until they land, BuddyTheme falls back to Roboto explicitly (no runtime CDN).

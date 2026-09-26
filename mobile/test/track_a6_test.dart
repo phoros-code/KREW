@@ -26,7 +26,6 @@ import 'package:everyday_buddy/widgets/task_notification_banner.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -44,9 +43,8 @@ import 'package:http/testing.dart';
 /// - Cancelling an async* SSE subscription suspended mid-await-for hangs
 ///   both `cancel()` and a later `controller.close()` — the cancel test uses
 ///   take(2) auto-cancel and never closes the transport.
-/// - With runtime font fetching off, every GoogleFonts style spawns an
-///   unhandled load future that real-async windows surface — [_settleReal]
-///   users run inside [_ignoreFontNoise].
+/// - Track C1: google_fonts removed — no runtime font futures, so
+///   [_ignoreFontNoise] is a plain passthrough kept for call-site stability.
 
 /// Scaffold frame for widget tests. No extra scroll view: ConsoleColumn
 /// screens already own their scroll region + bottom bar.
@@ -61,24 +59,10 @@ Future<void> _settleShort(WidgetTester tester) async {
   }
 }
 
-/// Runs [body] in a zone that swallows google_fonts load failures.
-///
-/// With runtime fetching off (this file's test config), EVERY GoogleFonts
-/// style creation spawns an unhandled load future. Pure-fake tests absorb
-/// it, but the real-async windows in [_settleReal] surface it as an
-/// uncaught error (deterministic in the re-probe test, which mounts two
-/// players). It is test-config noise — production bundles the fonts — so
-/// only non-font errors propagate.
+/// Track C1: google_fonts removed — no font load futures exist, so this is a
+/// plain passthrough kept so the two re-probe call sites stay unchanged.
 Future<void> _ignoreFontNoise(Future<void> Function() body) async {
-  final List<(Object, StackTrace)> errors = <(Object, StackTrace)>[];
-  await runZonedGuarded(body, (Object e, StackTrace s) {
-    errors.add((e, s));
-  });
-  for (final (Object e, StackTrace s) in errors) {
-    if (!e.toString().contains('allowRuntimeFetching')) {
-      await Future<void>.error(e, s);
-    }
-  }
+  await body();
 }
 
 /// Real-async settle for flows that cancel an idle streamed response:
@@ -361,10 +345,7 @@ BuddyApi _mockApi(Future<http.Response> Function(http.BaseRequest) handler) =>
     );
 
 void main() {
-  setUpAll(() {
-    // No font fetching in tests — fall back to the platform default.
-    GoogleFonts.config.allowRuntimeFetching = false;
-  });
+  // Track C1: google_fonts removed — no test font config needed.
 
   group('A6.1 watchEvents parser', () {
     test('multi-line data: frames fold into one JSON payload', () async {
@@ -843,7 +824,9 @@ void main() {
         await tester.pump();
       }
       await tester.pump(const Duration(milliseconds: 100));
-      expect(find.byType(BottomNavigationBar), findsOneWidget);
+      // Track C1: M3 NavigationBar (not M2 BottomNavigationBar).
+      expect(find.byType(NavigationBar), findsOneWidget);
+      expect(find.byType(BottomNavigationBar), findsNothing);
       for (final label in <String>['Pair', 'Chat', 'Tasks', 'Screen']) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
@@ -1807,7 +1790,7 @@ void main() {
   });
 
   group('A6.13 theme tokens match DESIGN.md', () {
-    test('palette hexes', () {
+    test('palette hexes (base hues unchanged)', () {
       expect(BuddyColors.primary, const Color(0xFF1E5F4A));
       expect(BuddyColors.baseDark, const Color(0xFF12131A));
       expect(BuddyColors.baseLight, const Color(0xFFF5F4F0));
@@ -1836,6 +1819,132 @@ void main() {
     test('radii are 8 interactive / 12 containers only', () {
       expect(BuddyRadii.interactive, 8);
       expect(BuddyRadii.container, 12);
+    });
+  });
+
+  group('C1 design-system integrity (DESIGN.md contract)', () {
+    test('accessible OnLight/OnDark variants match DESIGN.md hexes', () {
+      expect(BuddyColors.warningOnLight, const Color(0xFF8A5A12));
+      expect(BuddyColors.warningOnDark, const Color(0xFFE1A955));
+      expect(BuddyColors.successOnLight, const Color(0xFF2E6F4A));
+      expect(BuddyColors.successOnDark, const Color(0xFF4E976C));
+      expect(BuddyColors.errorOnLight, const Color(0xFFB03E37));
+      expect(BuddyColors.errorOnDark, const Color(0xFFD06A64));
+      expect(BuddyColors.outlineOnDark, const Color(0xFF6E6F7A));
+    });
+
+    test('font families resolve to DESIGN.md choices with Roboto fallback '
+        '(fails if google_fonts is re-added)', () {
+      expect(BuddyTheme.headlineFamily, 'Space Grotesk');
+      expect(BuddyTheme.bodyFamily, 'IBM Plex Sans');
+      expect(BuddyTheme.monoFamily, 'JetBrains Mono');
+      expect(BuddyTheme.fallbackFamily, 'Roboto');
+      final ThemeData light = BuddyTheme.light();
+      final ThemeData dark = BuddyTheme.dark();
+      // Headlines prefer Space Grotesk, body prefers IBM Plex Sans.
+      expect(light.textTheme.headlineSmall?.fontFamily, 'Space Grotesk');
+      expect(light.textTheme.titleLarge?.fontFamily, 'Space Grotesk');
+      expect(light.textTheme.bodyLarge?.fontFamily, 'IBM Plex Sans');
+      expect(light.textTheme.bodySmall?.fontFamily, 'IBM Plex Sans');
+      expect(light.textTheme.labelLarge?.fontFamily, 'IBM Plex Sans');
+      expect(dark.textTheme.headlineSmall?.fontFamily, 'Space Grotesk');
+      expect(dark.textTheme.bodyMedium?.fontFamily, 'IBM Plex Sans');
+      // Every text style degrades to Roboto explicitly (no CDN).
+      for (final TextStyle? s in <TextStyle?>[
+        light.textTheme.headlineSmall,
+        light.textTheme.titleLarge,
+        light.textTheme.titleMedium,
+        light.textTheme.bodyLarge,
+        light.textTheme.bodyMedium,
+        light.textTheme.bodySmall,
+        light.textTheme.labelLarge,
+      ]) {
+        expect(s?.fontFamilyFallback, contains('Roboto'));
+      }
+      // Mono helper prefers JetBrains Mono with the same fallback.
+      final TextStyle mono = BuddyTheme.mono(const Color(0xFF000000));
+      expect(mono.fontFamily, 'JetBrains Mono');
+      expect(mono.fontFamilyFallback, contains('Roboto'));
+    });
+
+    test('M3 ColorScheme is complete — no Material-default purple leaks', () {
+      const List<Color> purples = <Color>[
+        Color(0xFF6750A4),
+        Color(0xFF625B71),
+        Color(0xFF7D5260),
+        Color(0xFFB3261E),
+        Color(0xFF6200EE),
+        Color(0xFF03DAC6),
+        Color(0xFFBB86FC),
+        Color(0xFFCF6679),
+      ];
+      final ThemeData light = BuddyTheme.light();
+      final ThemeData dark = BuddyTheme.dark();
+      for (final ColorScheme scheme in <ColorScheme>[
+        light.colorScheme,
+        dark.colorScheme,
+      ]) {
+        for (final Color c in <Color>[
+          scheme.primary,
+          scheme.onPrimary,
+          scheme.primaryContainer,
+          scheme.onPrimaryContainer,
+          scheme.secondary,
+          scheme.onSecondary,
+          scheme.secondaryContainer,
+          scheme.onSecondaryContainer,
+          scheme.tertiary,
+          scheme.onTertiary,
+          scheme.tertiaryContainer,
+          scheme.onTertiaryContainer,
+          scheme.error,
+          scheme.onError,
+          scheme.errorContainer,
+          scheme.onErrorContainer,
+          scheme.surface,
+          scheme.onSurface,
+          scheme.surfaceContainerLowest,
+          scheme.surfaceContainerLow,
+          scheme.surfaceContainer,
+          scheme.surfaceContainerHigh,
+          scheme.surfaceContainerHighest,
+          scheme.onSurfaceVariant,
+          scheme.outline,
+          scheme.outlineVariant,
+          scheme.inverseSurface,
+          scheme.onInverseSurface,
+          scheme.inversePrimary,
+        ]) {
+          expect(purples, isNot(contains(c)), reason: 'leaked $c');
+        }
+      }
+      // Error slots use the accessible variants per brightness.
+      expect(light.colorScheme.error, BuddyColors.errorOnLight);
+      expect(dark.colorScheme.error, BuddyColors.errorOnDark);
+      expect(light.colorScheme.outlineVariant, BuddyColors.hairlineOnLight);
+      expect(dark.colorScheme.outline, BuddyColors.outlineOnDark);
+      expect(dark.colorScheme.outlineVariant, BuddyColors.hairlineOnDark);
+      expect(light.colorScheme.onSurfaceVariant, BuddyColors.inkMutedOnLight);
+      expect(dark.colorScheme.onSurfaceVariant, BuddyColors.inkMutedOnDark);
+    });
+
+    testWidgets('NavigationBar present with 4 destinations, 8px indicator, '
+        'no M2 bar', (WidgetTester tester) async {
+      await tester.pumpWidget(BuddyApp(store: _FakeBootStore()));
+      await tester.pumpAndSettle();
+      expect(find.byType(NavigationBar), findsOneWidget);
+      expect(find.byType(BottomNavigationBar), findsNothing);
+      for (final label in <String>['Pair', 'Chat', 'Tasks', 'Screen']) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+      // Indicator shape comes from the token scale (8px interactive).
+      final ThemeData light = BuddyTheme.light();
+      final ShapeBorder? shape =
+          light.navigationBarTheme.indicatorShape;
+      expect(shape, isA<RoundedRectangleBorder>());
+      final RoundedRectangleBorder rounded = shape! as RoundedRectangleBorder;
+      expect(rounded.borderRadius, const BorderRadius.all(Radius.circular(8)));
+      expect(tester.takeException(), isNull);
     });
   });
 }
