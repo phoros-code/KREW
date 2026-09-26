@@ -26,11 +26,37 @@ class BuddyApp extends StatefulWidget {
 
   final SecureStore? _storeOverride;
 
+  /// Ordered shutdown contract (Track A5.10): stream subscriptions die
+  /// first, the BLE reader fully disposes second, and the proximity
+  /// notifier goes last — no RSSI update can land on a disposed
+  /// ChangeNotifier. Factored as a static so the order is unit-pinned;
+  /// [State.dispose] delegates to it.
+  @visibleForTesting
+  static Future<void> shutdownOrder({
+    required Future<void> Function() cancelStreams,
+    required Future<void> Function() disposeReader,
+    required void Function() disposeProximity,
+  }) async {
+    await cancelStreams();
+    await disposeReader();
+    disposeProximity();
+  }
+
   @override
   State<BuddyApp> createState() => _BuddyAppState();
 }
 
-class _BuddyAppState extends State<BuddyApp> {
+/// SSE auto-reconnect backoff (Track A5.8): 1s, 2s, 4s, 8s, 16s, then capped
+/// at 30s. [failures] counts consecutive stream failures (≥1). Pure — unit
+/// tested. Manual Reconnect resets the count; so does a fresh `connected`
+/// frame.
+Duration sseReconnectDelay(int failures) {
+  final int step = failures < 1 ? 1 : (failures > 6 ? 6 : failures);
+  final int seconds = 1 << (step - 1); // 1, 2, 4, 8, 16, 32
+  return Duration(seconds: seconds > 30 ? 30 : seconds);
+}
+
+class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   late final SecureStore _store;
   final ProximityService _proximity = ProximityService();
   final TaskList _tasks = TaskList();
@@ -41,14 +67,31 @@ class _BuddyAppState extends State<BuddyApp> {
   String? _certFingerprint;
   String? _btDeviceId;
   bool _booting = true;
+  String? _bootError;
   int _tab = 0;
 
   StreamSubscription<BuddyEvent>? _subscription;
   BleProximityReader? _bleReader;
   StreamSubscription<int?>? _bleSub;
+  StreamSubscription<String?>? _bleCauseSub;
   String? _streamError;
   bool _streamConnected = false;
   int _connectAttempt = 0;
+
+  /// Auto-reconnect state (Track A5.8): consecutive-failure count + pending
+  /// timer + the 30s no-frame-no-comment stall watchdog.
+  Timer? _reconnectTimer;
+  Timer? _stallTimer;
+  int _backoffFailures = 0;
+
+  /// Lifecycle suspend counter (Track A5.5): bumped when leaving the Screen
+  /// tab or backgrounding; [ScreenPreview] revokes + unmounts on every bump.
+  int _previewSuspend = 0;
+  bool _backgrounded = false;
+
+  /// Pairing generation (Track A5.12): guards the async BT-id restore in
+  /// [_onPaired] so a stale read can never land on a newer pairing.
+  int _pairingGeneration = 0;
   final GlobalKey<ScaffoldMessengerState> _messengerKey =
       GlobalKey<ScaffoldMessengerState>();
 
@@ -57,6 +100,7 @@ class _BuddyAppState extends State<BuddyApp> {
     super.initState();
     _store = widget._storeOverride ?? SecureStore();
     _proximity.addListener(_onProximityChanged);
+    WidgetsBinding.instance.addObserver(this);
     _boot();
   }
 
@@ -65,22 +109,49 @@ class _BuddyAppState extends State<BuddyApp> {
   }
 
   Future<void> _boot() async {
-    final PairingInfo? saved = await _store.readPairing();
-    if (!mounted) return;
-    _btDeviceId = await _store.readBtDeviceId();
-    if (!mounted) return;
-    _certFingerprint = await _store.readCertFingerprint();
-    if (!mounted) return;
-    setState(() {
-      _booting = false;
-      if (saved != null) {
-        _attachApi(saved.host, saved.token, _certFingerprint, initialTab: 1);
+    try {
+      final PairingInfo? saved = await _store.readPairing();
+      if (!mounted) return;
+      _btDeviceId = await _store.readBtDeviceId();
+      if (!mounted) return;
+      _certFingerprint = await _store.readCertFingerprint();
+      if (!mounted) return;
+      BuddyApi? attached;
+      setState(() {
+        _booting = false;
+        _bootError = null;
+        if (saved != null) {
+          try {
+            _attachApi(saved.host, saved.token, _certFingerprint, initialTab: 1);
+            attached = _api;
+          } on BuddyApiException {
+            // Stale saved host that fails the strict gate: stay unpaired
+            // instead of crashing boot — the user simply re-pairs.
+          }
+        }
+      });
+      if (attached != null) {
+        _connectEvents();
+        _refreshProximityConfig();
       }
-    });
-    if (saved != null) {
-      _connectEvents();
-      _refreshProximityConfig();
+    } catch (_) {
+      // Secure-storage failure (locked keystore, missing plugin): a designed
+      // retry state, never a red screen or a hang on the spinner.
+      if (!mounted) return;
+      setState(() {
+        _booting = false;
+        _bootError =
+            'Secure storage is unavailable — pairing details could not be read.';
+      });
     }
+  }
+
+  void _retryBoot() {
+    setState(() {
+      _booting = true;
+      _bootError = null;
+    });
+    _boot();
   }
 
   void _attachApi(String host, String token, String? certFingerprint, {int? initialTab}) {
@@ -93,6 +164,8 @@ class _BuddyAppState extends State<BuddyApp> {
   }
 
   void _onPaired(String host, String token, String certFingerprint) {
+    _pairingGeneration++;
+    final int generation = _pairingGeneration;
     setState(() {
       _attachApi(host, token, certFingerprint);
       _tab = 1;
@@ -106,7 +179,9 @@ class _BuddyAppState extends State<BuddyApp> {
     _proximity.markNear();
     _connectEvents();
     _store.readBtDeviceId().then((String? id) {
-      if (!mounted) return;
+      // Generation-guarded (Track A5.12): an unpair/re-pair racing this
+      // read must not land a stale BT id on the new pairing.
+      if (!mounted || generation != _pairingGeneration) return;
       _btDeviceId = id;
       if (mounted) setState(() {});
       _refreshProximityConfig();
@@ -139,8 +214,14 @@ class _BuddyAppState extends State<BuddyApp> {
     if (id == null || id.isEmpty) return;
     _bleReader ??= liveBleProximityReader();
     await _bleSub?.cancel();
+    await _bleCauseSub?.cancel();
     _bleSub = _bleReader!.rssi.listen((int? rssi) {
       _proximity.updateRssi(rssi);
+    });
+    // Known-cause surfacing (Track A5.9): permission/adapter problems flow
+    // into the calibrate screen + header FAR reason instead of silent FAR.
+    _bleCauseSub = _bleReader!.cause.listen((String? cause) {
+      _proximity.setBleCause(cause);
     });
     await _bleReader!.start(id);
   }
@@ -148,10 +229,63 @@ class _BuddyAppState extends State<BuddyApp> {
   Future<void> _stopBleWatch() async {
     await _bleSub?.cancel();
     _bleSub = null;
+    await _bleCauseSub?.cancel();
+    _bleCauseSub = null;
     await _bleReader?.stop();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    switch (state) {
+      case AppLifecycleState.resumed:
+        // Foreground return re-arms per the existing rules (config fetch →
+        // BLE watch only when lan_plus_bluetooth + saved id). The preview
+        // itself never auto-restarts.
+        _backgrounded = false;
+        if (_api != null) _rearmSensitive();
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.paused:
+      case AppLifecycleState.hidden:
+      case AppLifecycleState.detached:
+        if (!_backgrounded) {
+          _backgrounded = true;
+          _suspendSensitive();
+        }
+    }
+  }
+
+  /// Leaving the Screen tab or backgrounding (Track A5.5): stop the preview
+  /// (revoke + player unmount via the suspend counter) and pause the BLE
+  /// watch. Nothing keeps running in the background.
+  void _suspendSensitive() {
+    if (!mounted) return;
+    setState(() => _previewSuspend++);
+    unawaited(_stopBleWatch());
+  }
+
+  /// Returning re-arms per the existing rules (see didChangeAppLifecycleState).
+  void _rearmSensitive() {
+    unawaited(_refreshProximityConfig());
+  }
+
+  /// Tab switch with the lifecycle signal (Track A5.5): leaving Screen
+  /// suspends (preview revoke + BLE pause); entering Screen re-arms.
+  void _onTab(int i) {
+    if (i == _tab) return;
+    final bool leavingScreen = _tab == 3 && i != 3;
+    final bool enteringScreen = _tab != 3 && i == 3;
+    setState(() => _tab = i);
+    if (leavingScreen) _suspendSensitive();
+    if (enteringScreen && _api != null) _rearmSensitive();
+  }
+
   Future<void> _onUnpair() async {
+    _pairingGeneration++;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _backoffFailures = 0;
     await _store.clear();
     await _subscription?.cancel();
     await _stopBleWatch();
@@ -172,23 +306,53 @@ class _BuddyAppState extends State<BuddyApp> {
     });
     _proximity.markFar();
     _proximity.setUnknown();
+    _proximity.setBleCause(null);
   }
 
+  /// Manual (re)connect: resets the backoff, cancels any pending auto-retry
+  /// and the stall watchdog, then opens the stream. Wired to every
+  /// Reconnect button.
   void _connectEvents() {
+    _backoffFailures = 0;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _connectNow();
+  }
+
+  void _connectNow() {
     _subscription?.cancel();
     _subscription = null;
     final BuddyApi? api = _api;
     if (api == null) return;
     _connectAttempt++;
     final int attempt = _connectAttempt;
-    setState(() {
-      _streamError = null;
-      _streamConnected = false;
-    });
+    if (mounted) {
+      setState(() {
+        _streamError = null;
+        _streamConnected = false;
+      });
+    }
     _proximity.setUnknown();
-    _subscription = api.watchEvents().listen(
+    _armStallWatchdog(attempt);
+    _subscription = api.watchEvents(onActivity: () {
+      if (attempt == _connectAttempt) _armStallWatchdog(attempt);
+    }).listen(
       (BuddyEvent event) {
         if (!mounted || attempt != _connectAttempt) return;
+        // Synthetic open-frame (Track A5.1): HTTP 200 arrived — the stream
+        // is open. Mark online + connected WITHOUT waiting for the first
+        // task frame, so a fresh pairing enables the command bar with an
+        // empty log. Never enters the visible log.
+        if (event.type == 'connected') {
+          _backoffFailures = 0;
+          setState(() {
+            _streamConnected = true;
+            _streamError = null;
+          });
+          _proximity.setOnline();
+          _armStallWatchdog(attempt);
+          return;
+        }
         // Fallback title must be read BEFORE folding: completed/failed
         // frames carry result/error, not the command text.
         final String? taskId = event.taskId;
@@ -204,6 +368,7 @@ class _BuddyAppState extends State<BuddyApp> {
           _tasks.applyEvent(event);
         });
         _proximity.setOnline();
+        _armStallWatchdog(attempt);
         // In-app notification (Phase 4.3): a floating SnackBar over the
         // current console-column screen — no new layout shape, and it works
         // in FAR (notifications-only) mode too. "View" jumps to the Tasks
@@ -228,9 +393,12 @@ class _BuddyAppState extends State<BuddyApp> {
         String message = err is BuddyApiException
             ? err.message
             : 'The live stream dropped. Reconnect to resume updates.';
+        bool authFailure = false;
         if (err is BuddyApiException &&
             (err.code == 'unauthorized' || err.code == 'token_expired')) {
           message = 'The laptop rejected the token. Re-pair from the Pair tab.';
+          // Re-pair needs the user — never auto-retry an auth failure.
+          authFailure = true;
         }
         if (err is BuddyApiException && err.code == 'forbidden') {
           _proximity.markFar();
@@ -238,20 +406,55 @@ class _BuddyAppState extends State<BuddyApp> {
         if (err is BuddyApiException && err.code == 'unreachable') {
           _proximity.setOffline();
         }
-        setState(() {
-          _streamConnected = false;
-          _streamError = message;
-        });
+        _onStreamDown(message, authFailure: authFailure);
       },
       onDone: () {
         if (!mounted || attempt != _connectAttempt) return;
-        setState(() {
-          _streamConnected = false;
-          _streamError ??= 'The live stream closed. Reconnect to resume.';
-        });
+        if (_streamError != null) return;
+        // onError already recorded the message and scheduled the retry —
+        // a bare close after an error adds nothing (and must not double
+        // the backoff count).
+        _onStreamDown('The live stream closed. Reconnect to resume.');
       },
       cancelOnError: false,
     );
+  }
+
+  /// Shared stream-down path (Track A5.8): error state + backed-off
+  /// auto-reconnect, generation-guarded by [_connectAttempt] at the call
+  /// sites. Auth failures skip the retry — they need a re-pair, not a loop.
+  void _onStreamDown(String message, {bool authFailure = false}) {
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _streamConnected = false;
+      _streamError = message;
+    });
+    if (!authFailure) _scheduleReconnect();
+  }
+
+  void _scheduleReconnect() {
+    if (_api == null) return;
+    _reconnectTimer?.cancel();
+    _backoffFailures++;
+    final Duration delay = sseReconnectDelay(_backoffFailures);
+    _reconnectTimer = Timer(delay, () {
+      if (!mounted || _api == null) return;
+      _connectNow();
+    });
+  }
+
+  /// Stall watchdog (Track A5.8): no frame AND no `:comment` heartbeat for
+  /// 30s means the stream is dead even though the socket looks open —
+  /// reconnect through the same backed-off path. Re-armed on every event
+  /// and every raw line via `onActivity`.
+  void _armStallWatchdog(int attempt) {
+    _stallTimer?.cancel();
+    _stallTimer = Timer(const Duration(seconds: 30), () {
+      if (!mounted || attempt != _connectAttempt) return;
+      _onStreamDown('The live stream went quiet — reconnecting…');
+    });
   }
 
   Future<void> _sendCommand(String text) async {
@@ -281,17 +484,86 @@ class _BuddyAppState extends State<BuddyApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _stallTimer?.cancel();
+    _stallTimer = null;
     _proximity.removeListener(_onProximityChanged);
-    _proximity.dispose();
-    _subscription?.cancel();
-    _bleSub?.cancel();
-    _bleReader?.dispose();
+    // Ordered shutdown (Track A5.10): subscriptions, then the BLE reader,
+    // then the proximity notifier — delegated to the pinned static.
+    final StreamSubscription<BuddyEvent>? sub = _subscription;
+    final StreamSubscription<int?>? bleSub = _bleSub;
+    final StreamSubscription<String?>? bleCauseSub = _bleCauseSub;
+    final BleProximityReader? reader = _bleReader;
+    _subscription = null;
+    _bleSub = null;
+    _bleCauseSub = null;
+    _bleReader = null;
+    unawaited(
+      BuddyApp.shutdownOrder(
+        cancelStreams: () async {
+          await sub?.cancel();
+          await bleSub?.cancel();
+          await bleCauseSub?.cancel();
+        },
+        disposeReader: () async {
+          if (reader != null) await reader.dispose();
+        },
+        disposeProximity: _proximity.dispose,
+      ),
+    );
     _api?.close();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_bootError != null) {
+      // Designed boot-failure state (Track A5.6): secure storage unreadable.
+      // One explanatory line + Retry — same tokens, no new styling.
+      final String message = _bootError!;
+      return MaterialApp(
+        title: 'Everyday Buddy',
+        scaffoldMessengerKey: _messengerKey,
+        theme: BuddyTheme.light(),
+        darkTheme: BuddyTheme.dark(),
+        home: Scaffold(
+          body: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(BuddySpacing.s5),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Icon(
+                    Icons.error_outline,
+                    size: 32,
+                    color: BuddyColors.error,
+                  ),
+                  const SizedBox(height: BuddySpacing.s3),
+                  Text(
+                    'Could not start',
+                    style: Theme.of(context).textTheme.titleMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: BuddySpacing.s2),
+                  Text(
+                    message,
+                    style: Theme.of(context).textTheme.bodySmall,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: BuddySpacing.s4),
+                  ElevatedButton(
+                    onPressed: _retryBoot,
+                    child: const Text('Retry'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     return MaterialApp(
       title: 'Everyday Buddy',
       scaffoldMessengerKey: _messengerKey,
@@ -312,6 +584,7 @@ class _BuddyAppState extends State<BuddyApp> {
                 proximity: _proximity.mode,
                 connection: _proximity.connection,
                 runningCount: _tasks.runningCount,
+                farReason: _proximity.bleCause,
               ),
               body: IndexedStack(
                 index: _tab,
@@ -343,6 +616,7 @@ class _BuddyAppState extends State<BuddyApp> {
                     proximity: _proximity.mode,
                     proximityService: _proximity,
                     onCalibrated: _refreshProximityConfig,
+                    suspendSignal: _previewSuspend,
                   ),
                 ],
               ),
@@ -353,7 +627,7 @@ class _BuddyAppState extends State<BuddyApp> {
                     _UnpairStrip(savedHost: _savedHost, onUnpair: _onUnpair),
                   BottomNavigationBar(
                     currentIndex: _tab,
-                    onTap: (int i) => setState(() => _tab = i),
+                    onTap: _onTab,
                     items: const <BottomNavigationBarItem>[
                       BottomNavigationBarItem(
                         icon: Icon(Icons.link_outlined),
