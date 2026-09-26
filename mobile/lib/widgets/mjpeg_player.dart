@@ -237,6 +237,8 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
     final bool dark = Theme.of(context).brightness == Brightness.dark;
     final Color muted =
         dark ? BuddyColors.inkMutedOnDark : BuddyColors.inkMutedOnLight;
+    final Color errorText =
+        dark ? BuddyColors.errorOnDark : BuddyColors.errorOnLight;
     final TextStyle? small = Theme.of(context).textTheme.bodySmall;
     // Host only — the URL query carries the live grant and is never shown.
     final String host = Uri.tryParse(widget.streamUrl)?.host ?? '';
@@ -251,10 +253,10 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
           Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              const Icon(
+              Icon(
                 Icons.error_outline,
                 size: 32,
-                color: BuddyColors.error,
+                color: errorText,
               ),
               const SizedBox(height: BuddySpacing.s3),
               Text(

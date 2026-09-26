@@ -96,6 +96,9 @@ class _ChatScreenState extends State<ChatScreen> {
     final Color hairline = dark
         ? BuddyColors.hairlineOnDark
         : BuddyColors.hairlineOnLight;
+    final Color errorText = dark
+        ? BuddyColors.errorOnDark
+        : BuddyColors.errorOnLight;
     final TextStyle? small = Theme.of(context).textTheme.bodySmall;
 
     final bool paired = widget.api != null;
@@ -138,7 +141,7 @@ class _ChatScreenState extends State<ChatScreen> {
             Container(
               padding: const EdgeInsets.all(BuddySpacing.s4),
               decoration: BoxDecoration(
-                border: Border.all(color: BuddyColors.error),
+                border: Border.all(color: errorText),
                 borderRadius: const BorderRadius.all(
                   Radius.circular(BuddyRadii.container),
                 ),
@@ -146,10 +149,10 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Icon(
+                  Icon(
                     Icons.error_outline,
                     size: 18,
-                    color: BuddyColors.error,
+                    color: errorText,
                   ),
                   const SizedBox(width: BuddySpacing.s3),
                   Expanded(
@@ -160,7 +163,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           'Live updates paused',
                           style: Theme.of(context).textTheme.labelLarge
                               ?.copyWith(
-                                color: BuddyColors.error,
+                                color: errorText,
                                 fontWeight: FontWeight.w700,
                               ),
                         ),
@@ -185,17 +188,17 @@ class _ChatScreenState extends State<ChatScreen> {
             Container(
               padding: const EdgeInsets.all(BuddySpacing.s3),
               decoration: BoxDecoration(
-                border: Border.all(color: BuddyColors.error),
+                border: Border.all(color: errorText),
                 borderRadius: const BorderRadius.all(
                   Radius.circular(BuddyRadii.container),
                 ),
               ),
               child: Row(
                 children: <Widget>[
-                  const Icon(
+                  Icon(
                     Icons.error_outline,
                     size: 16,
-                    color: BuddyColors.error,
+                    color: errorText,
                   ),
                   const SizedBox(width: BuddySpacing.s2),
                   Expanded(child: Text(_sendError!, style: small)),

@@ -38,7 +38,13 @@ class TaskNotificationContent extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          StatusBadge(status: notification.status),
+          // SnackBar bg is baseDark in both themes — force dark brightness
+          // so the badge picks the OnDark text variants (≥4.5:1 on dark).
+          // Light variants would be dark-on-dark (∼3.1:1, fail).
+          Theme(
+            data: Theme.of(context).copyWith(brightness: Brightness.dark),
+            child: StatusBadge(status: notification.status),
+          ),
           const SizedBox(width: BuddySpacing.s3),
           Expanded(
             child: Column(

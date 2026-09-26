@@ -301,6 +301,12 @@ class _ScreenPreviewState extends State<ScreenPreview> {
     final Color hairline = dark
         ? BuddyColors.hairlineOnDark
         : BuddyColors.hairlineOnLight;
+    final Color warningText = dark
+        ? BuddyColors.warningOnDark
+        : BuddyColors.warningOnLight;
+    final Color errorText = dark
+        ? BuddyColors.errorOnDark
+        : BuddyColors.errorOnLight;
     final TextStyle? body = Theme.of(context).textTheme.bodyMedium;
     final TextStyle? small = Theme.of(context).textTheme.bodySmall;
 
@@ -337,10 +343,10 @@ class _ScreenPreviewState extends State<ScreenPreview> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            const Icon(
+            Icon(
               Icons.lock_outline,
               size: 32,
-              color: BuddyColors.warning,
+              color: warningText,
             ),
             const SizedBox(height: BuddySpacing.s3),
             Text(
@@ -504,10 +510,10 @@ class _ScreenPreviewState extends State<ScreenPreview> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              const Icon(
+              Icon(
                 Icons.error_outline,
                 size: 32,
-                color: BuddyColors.error,
+                color: errorText,
               ),
               const SizedBox(height: BuddySpacing.s3),
               Text(
@@ -546,10 +552,10 @@ class _ScreenPreviewState extends State<ScreenPreview> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                const Icon(
+                Icon(
                   Icons.error_outline,
                   size: 32,
-                  color: BuddyColors.error,
+                  color: errorText,
                 ),
                 const SizedBox(height: BuddySpacing.s3),
                 Text(

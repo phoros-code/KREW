@@ -56,6 +56,9 @@ class _CommandBarState extends State<CommandBar> {
     final Color muted = dark
         ? BuddyColors.inkMutedOnDark
         : BuddyColors.inkMutedOnLight;
+    final Color warningText = dark
+        ? BuddyColors.warningOnDark
+        : BuddyColors.warningOnLight;
     final bool busy = _busy || widget.sending;
     final bool active = widget.enabled && !busy;
 
@@ -68,10 +71,10 @@ class _CommandBarState extends State<CommandBar> {
             padding: const EdgeInsets.only(bottom: BuddySpacing.s2),
             child: Row(
               children: <Widget>[
-                const Icon(
+                Icon(
                   Icons.lock_outline,
                   size: 14,
-                  color: BuddyColors.warning,
+                  color: warningText,
                 ),
                 const SizedBox(width: BuddySpacing.s2),
                 Expanded(

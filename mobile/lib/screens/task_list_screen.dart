@@ -31,6 +31,9 @@ class TaskListScreen extends StatelessWidget {
     final Color hairline = dark
         ? BuddyColors.hairlineOnDark
         : BuddyColors.hairlineOnLight;
+    final Color errorText = dark
+        ? BuddyColors.errorOnDark
+        : BuddyColors.errorOnLight;
     final TextStyle? small = Theme.of(context).textTheme.bodySmall;
 
     final List<TaskItem> items = tasks.items;
@@ -52,7 +55,7 @@ class TaskListScreen extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(BuddySpacing.s4),
               decoration: BoxDecoration(
-                border: Border.all(color: BuddyColors.error),
+                border: Border.all(color: errorText),
                 borderRadius: const BorderRadius.all(
                   Radius.circular(BuddyRadii.container),
                 ),
@@ -62,16 +65,16 @@ class TaskListScreen extends StatelessWidget {
                 children: <Widget>[
                   Row(
                     children: <Widget>[
-                      const Icon(
+                      Icon(
                         Icons.error_outline,
                         size: 18,
-                        color: BuddyColors.error,
+                        color: errorText,
                       ),
                       const SizedBox(width: BuddySpacing.s2),
                       Text(
                         'Task updates paused',
                         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                          color: BuddyColors.error,
+                          color: errorText,
                           fontWeight: FontWeight.w700,
                         ),
                       ),

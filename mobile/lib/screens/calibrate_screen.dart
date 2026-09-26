@@ -155,8 +155,16 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
         final int? rssi = widget.proximity.lastRssi;
         final bool near = widget.proximity.isNear;
         final String? bleCause = widget.proximity.bleCause;
-        final Color pillColor =
-            near ? BuddyColors.success : BuddyColors.warning;
+        // Track C1: pill text uses accessible variants (≥4.5:1).
+        final Color pillText = near
+            ? (dark ? BuddyColors.successOnDark : BuddyColors.successOnLight)
+            : (dark ? BuddyColors.warningOnDark : BuddyColors.warningOnLight);
+        final Color warningText = dark
+            ? BuddyColors.warningOnDark
+            : BuddyColors.warningOnLight;
+        final Color errorText = dark
+            ? BuddyColors.errorOnDark
+            : BuddyColors.errorOnLight;
 
         return Container(
           width: double.infinity,
@@ -205,10 +213,10 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
                 const SizedBox(height: BuddySpacing.s3),
                 Row(
                   children: <Widget>[
-                    const Icon(
+                    Icon(
                       Icons.bluetooth_disabled_outlined,
                       size: 16,
-                      color: BuddyColors.warning,
+                      color: warningText,
                     ),
                     const SizedBox(width: BuddySpacing.s2),
                     Expanded(
@@ -244,12 +252,12 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
                       vertical: BuddySpacing.s1,
                     ),
                     decoration: BoxDecoration(
-                      color: pillColor.withValues(alpha: 0.12),
+                      color: pillText.withValues(alpha: 0.12),
                       borderRadius: const BorderRadius.all(
                         Radius.circular(BuddyRadii.interactive),
                       ),
                       border: Border.all(
-                        color: pillColor.withValues(alpha: 0.45),
+                        color: pillText.withValues(alpha: 0.45),
                       ),
                     ),
                     child: Text(
@@ -258,7 +266,7 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
                         fontSize: 11,
                         fontWeight: FontWeight.w700,
                         letterSpacing: 0.6,
-                        color: pillColor,
+                        color: pillText,
                       ),
                     ),
                   ),
@@ -314,7 +322,7 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
                 const SizedBox(height: BuddySpacing.s2),
                 Text(
                   _error!,
-                  style: small?.copyWith(color: BuddyColors.error),
+                  style: small?.copyWith(color: errorText),
                 ),
               ],
               const SizedBox(height: BuddySpacing.s3),

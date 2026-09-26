@@ -38,30 +38,45 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
         : BuddyColors.hairlineOnLight;
 
     final bool near = proximity == ProximityMode.near;
-    final Color proxColor = near ? BuddyColors.success : BuddyColors.warning;
+    // Track C1: pill text/icons use accessible OnLight/OnDark variants
+    // (≥4.5:1); 6px dots keep the base hues where they already pass 3:1.
+    final Color proxText = near
+        ? (dark ? BuddyColors.successOnDark : BuddyColors.successOnLight)
+        : (dark ? BuddyColors.warningOnDark : BuddyColors.warningOnLight);
+    final Color proxDot = near
+        ? BuddyColors.success
+        : (dark ? BuddyColors.warning : BuddyColors.warningOnLight);
     final String proxSemantic = near
         ? 'Proximity near — full control available'
         : (farReason == null
               ? 'Proximity far — notifications only, commands blocked'
               : 'Proximity far — $farReason');
 
-    final Color connColor;
+    final Color connText;
+    final Color connDot;
     final String connLabel;
     final String connSemantic;
     final IconData connIcon;
     switch (connection) {
       case BuddyConnection.online:
-        connColor = BuddyColors.success;
+        connText = dark
+            ? BuddyColors.successOnDark
+            : BuddyColors.successOnLight;
+        connDot = BuddyColors.success;
         connLabel = 'ONLINE';
         connSemantic = 'Connection online — laptop reachable';
         connIcon = Icons.wifi;
       case BuddyConnection.offline:
-        connColor = BuddyColors.error;
+        connText = dark ? BuddyColors.errorOnDark : BuddyColors.errorOnLight;
+        connDot = BuddyColors.error;
         connLabel = 'OFFLINE';
         connSemantic = 'Connection offline — no route to laptop';
         connIcon = Icons.wifi_off;
       case BuddyConnection.unknown:
-        connColor = BuddyColors.warning;
+        connText = dark
+            ? BuddyColors.warningOnDark
+            : BuddyColors.warningOnLight;
+        connDot = dark ? BuddyColors.warning : BuddyColors.warningOnLight;
         connLabel = 'CONNECTING';
         connSemantic = 'Connection connecting — opening the live stream';
         connIcon = Icons.wifi_find;
@@ -80,14 +95,16 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
       child: Row(
         children: <Widget>[
           _Pill(
-            color: proxColor,
+            color: proxText,
+            dot: proxDot,
             icon: near ? Icons.lock_open : Icons.lock_outline,
             label: near ? 'NEAR' : 'FAR',
             semantic: proxSemantic,
           ),
           const SizedBox(width: BuddySpacing.s2),
           _Pill(
-            color: connColor,
+            color: connText,
+            dot: connDot,
             icon: connIcon,
             label: connLabel,
             semantic: connSemantic,
@@ -137,12 +154,14 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
 class _Pill extends StatelessWidget {
   const _Pill({
     required this.color,
+    required this.dot,
     required this.icon,
     required this.label,
     this.semantic,
   });
 
   final Color color;
+  final Color dot;
   final IconData icon;
   final String label;
   final String? semantic;
@@ -170,7 +189,7 @@ class _Pill extends StatelessWidget {
               width: 6,
               height: 6,
               decoration: BoxDecoration(
-                color: color,
+                color: dot,
                 shape: BoxShape.circle,
               ),
             ),
