@@ -198,6 +198,12 @@ class BuddyApi {
   static bool fingerprintMatchesDer(List<int> der, String pinnedFingerprint) =>
       sha256.convert(der).toString() == normalizeFingerprint(pinnedFingerprint);
 
+  /// Test-only seam for [validatePairing]: when set, the /events probe is
+  /// built by this factory instead of [newPinnedClient] so unit tests can
+  /// drive the 200/401/403/429 branches without a TLS handshake. Always
+  /// null in production — pinning behavior is untouched.
+  static http.Client Function(String? fingerprint)? probeClientFactory;
+
   /// TLS client that trusts exactly one cert: the pinned fingerprint.
   /// Empty/missing pin trusts nothing (fail closed) — pairing always supplies
   /// one, so an unpinned client can only exist by programmer error.
@@ -596,7 +602,10 @@ class BuddyApi {
     await checkHealth();
     // Pinned like the main client: an unpinned probe would reject the
     // self-signed dev cert and fail pairing even when everything is correct.
-    final http.Client probe = BuddyApi.newPinnedClient(certFingerprint);
+    // [probeClientFactory] is a test-only seam (null in production).
+    final http.Client probe =
+        probeClientFactory?.call(certFingerprint) ??
+        BuddyApi.newPinnedClient(certFingerprint);
     try {
       final http.Request request = http.Request('GET', _uri('/events'));
       request.headers.addAll(_authHeaders);
