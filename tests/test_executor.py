@@ -20,7 +20,7 @@ def _tools(tmp_path) -> ToolsConfig:
     from buddy_core.config import load_tools_config
 
     cfg = load_tools_config()  # real allowlist/denylist — executor must honor them
-    cfg.files = FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    cfg.files = FilesConfig(workspace_root=str(tmp_path / "ws"))
     return cfg
 
 

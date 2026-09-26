@@ -62,7 +62,7 @@ def test_legit_commands_still_allowed(shell_cfg: ShellConfig) -> None:
 
 @pytest.fixture()
 def files_cfg(tmp_path) -> FilesConfig:
-    return FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    return FilesConfig(workspace_root=str(tmp_path / "ws"))
 
 
 def test_unc_paths_rejected(files_cfg: FilesConfig) -> None:

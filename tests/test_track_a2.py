@@ -150,7 +150,7 @@ def test_no_marker_in_log_write_file_flow(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(orchestrator, "EVENT_LOG", log)
 
     tools = orchestrator.load_tools_config()
-    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"))
     plan = Plan(steps=[ToolCall("write_file", {"path": "notes/m.md", "content": f"prefix {marker} suffix"})])
     from buddy_core.agents.executor import execute_plan
 
@@ -172,7 +172,7 @@ def test_no_marker_in_log_shell_denied_flow(tmp_path, monkeypatch) -> None:
     tools = orchestrator.load_tools_config()
     from buddy_core.config import FilesConfig
 
-    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"))
     # Denied via metacharacters (always blocked) + marker.
     plan = Plan(steps=[ToolCall("shell", {"command": f"echo hi; {marker}"})])
     from buddy_core.agents.executor import execute_plan
@@ -205,7 +205,7 @@ def test_no_marker_in_log_or_sse_coder_flow(tmp_path, monkeypatch) -> None:
     from buddy_core.config import FilesConfig
 
     tools = orchestrator.load_tools_config()
-    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"))
     monkeypatch.setattr("buddy_core.orchestrator.load_tools_config", lambda: tools)
 
     result = orchestrator.run("write hello.py that prints hi")

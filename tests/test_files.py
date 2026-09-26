@@ -12,7 +12,7 @@ from buddy_core.tools.files import FileAccessDenied
 
 @pytest.fixture()
 def cfg(tmp_path: Path) -> FilesConfig:
-    return FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    return FilesConfig(workspace_root=str(tmp_path / "ws"))
 
 
 def test_write_then_read_roundtrip(cfg: FilesConfig) -> None:

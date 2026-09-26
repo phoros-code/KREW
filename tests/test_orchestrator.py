@@ -230,7 +230,7 @@ def test_run_code_writes_file_in_workspace(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(orch, "EVENT_LOG", tmp_path / "events.jsonl")
 
     tools = ToolsConfig()
-    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"), allow_outside_workspace=False)
+    tools.files = FilesConfig(workspace_root=str(tmp_path / "ws"))
     monkeypatch.setattr("buddy_core.orchestrator.load_tools_config", lambda: tools)
 
     result = orch.run("write hello.py that prints hi")
