@@ -1,15 +1,63 @@
 # Changelog — Everyday Buddy
 
-## Unreleased (post-v0.1.0)
-- **Webcam preview**: consent-gated `GET /webcam` (separate consent scope —
-  screen grants never authorize webcam and vice versa), `capture_webcam_jpeg`
-  via OpenCV (lazy import, fail-closed), approve/deny/revoke mirror, 15
-  server tests incl. cross-scope isolation. App: Screen/Webcam segmented
-  toggle in Screen tab with per-source consent state. `opencv-python>=4.8.0`
-  declared in `pyproject.toml`. +16 dart tests (89 total).
-- **Honest 429 copy**: `ScreenStatus.rateLimited` — throttled preview probes
-  now say "slowing down, wait and retry" instead of "no route"; grant kept
-  for Retry.
+## v0.2.0 (2026-09-27) — Hardening (Track A)
+
+All 13 audit CRITICALs fixed; no new capabilities. Upgrade note: consent
+approve/deny now require the laptop (loopback or `X-Buddy-Approval` secret);
+legacy `security.yaml` files get a secret backfilled on first boot. The
+`POST /webcam` + `ScreenStatus.rateLimited` extras from post-v0.1.0 are
+included.
+
+### Auth & sessions (A1)
+- Live `/events`, `/screen`, `/webcam` streams re-verify the token every
+  tick — no stream outlives expiry, idle timeout, or rotation. Stream
+  keep-alives no longer refresh the idle clock (opt-in flag
+  `streams_follow_counts_as_activity`, default off).
+- Per-IP lockout (one bad host can't brick the phone), `RateLimiter`
+  eviction, atomic locked `security.yaml` writes, typed error on corrupt
+  config, `/command` length/type/concurrency caps + Ollama timeouts,
+  laptop-only `scripts/rotate_token.py` (named in SECURITY.md).
+
+### Event pipeline (A2)
+- Tool args redacted to length + SHA-256 in logs and SSE (no file contents,
+  no command text). 5 MB log rotation, seek-from-end tail, file I/O off the
+  event loop. `task_failed` on config/log failure and on empty commands.
+  Custom `/events` ASGI response (no double `receive` consume) with
+  `retry:` + `: ping` keepalive. Uniform `{error:{code,message}}` envelope
+  for 422/404/405.
+
+### Consent, second-party (A3, BREAKING)
+- Approve/deny require loopback origin or `X-Buddy-Approval`
+  (`consent_approval_secret`, auto-backfilled); phone-token-only approval →
+  403 `approval_forbidden`. Revoke stays phone-gated. One capture handle per
+  stream, 1 stream per grant + 4 per IP (429 `stream_limit`). Streams
+  settings configurable. API.md / SECURITY.md / HARDWARE §5 rewritten.
+
+### Agent surface & config truth (A4)
+- SSRF guard + 1 MB fetch ceiling in web search. Launch/list-apps go through
+  validated plans. Deleted the unwired `allow_outside_workspace` key. Wake
+  word/model/threshold honored from `models.yaml` (was hardcoded).
+  `fail_mode: near` rejected at load. Scripts read TLS/bind from
+  `security.yaml`. Voice replies use temp dirs. Deps declared truthfully
+  (cryptography, pyaudio; sse-starlette dropped). Stub modules called out
+  honestly in ARCHITECTURE.md.
+
+### Mobile critical path (A5)
+- Fresh-install command deadlock fixed (stream-open counts as connected).
+  Header inset overflow, frozen-frame-on-revoke (onDone + stall watchdog),
+  grant leaks on toggle/unmount, tab/background suspend with revoke,
+  boot-failure retry state, strict host validation, SSE backoff + stall
+  reconnect, BLE runtime permission + explanatory causes + rescan backoff,
+  dispose ordering, connect leak, empty-state/Retry/draft fixes.
+  `permission_handler` added.
+
+### Tests (A6)
+- 296 pytest (+117) incl. 15-route 401 matrix, capture real path, script
+  tests. 183 dart (+94) incl. full SSE-parser coverage, widget smokes for
+  all screens, theme-token pins, integration smoke shell. CI: superseded
+  runs cancelled, coverage artifact collected.
+
+## v0.1.0 (2026-09-26) — Phase 4 completion, code-complete
 
 ## v0.1.0 (2026-09-26) — Phase 4 completion, code-complete
 
