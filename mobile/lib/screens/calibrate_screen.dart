@@ -42,16 +42,45 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
   bool _saving = false;
   String? _error;
 
+  /// Last server threshold the draft was synced from — plain RSSI traffic
+  /// must NOT clobber a slider the user is dragging.
+  late int _lastThreshold;
+
   @override
   void initState() {
     super.initState();
     _draft = widget.proximity.rssiNearThreshold
         .clamp(minThreshold, maxThreshold)
         .toInt();
+    _lastThreshold = widget.proximity.rssiNearThreshold;
+    widget.proximity.addListener(_resyncDraft);
+  }
+
+  @override
+  void didUpdateWidget(CalibrateScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.proximity != widget.proximity) {
+      oldWidget.proximity.removeListener(_resyncDraft);
+      widget.proximity.addListener(_resyncDraft);
+      _resyncDraft();
+    }
+  }
+
+  /// Draft resync (Track A5.12): when the SERVER threshold moves under us
+  /// (fetch after pairing, apply echo), the draft follows — unless a save
+  /// is in flight, in which case the in-flight value wins.
+  void _resyncDraft() {
+    final int threshold = widget.proximity.rssiNearThreshold;
+    if (threshold == _lastThreshold || _saving || !mounted) return;
+    _lastThreshold = threshold;
+    setState(() {
+      _draft = threshold.clamp(minThreshold, maxThreshold).toInt();
+    });
   }
 
   @override
   void dispose() {
+    widget.proximity.removeListener(_resyncDraft);
     _logController.dispose();
     super.dispose();
   }
@@ -65,10 +94,10 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
     });
     try {
       final ProximityConfig cfg = await api.setProximityThreshold(_draft);
+      _lastThreshold = cfg.rssiNearThreshold;
       widget.proximity.setThreshold(cfg.rssiNearThreshold);
       await widget.onThresholdApplied();
       if (!mounted) return;
-      setState(() => _saving = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Threshold set to ${cfg.rssiNearThreshold} dBm.'),
@@ -76,10 +105,16 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
       );
     } on BuddyApiException catch (e) {
       if (!mounted) return;
-      setState(() {
-        _saving = false;
-        _error = _humanError(e);
-      });
+      setState(() => _error = _humanError(e));
+    } catch (_) {
+      // Non-API failure (dropped scaffold, platform error): still surface
+      // something human instead of hanging on the spinner.
+      if (!mounted) return;
+      setState(() => _error = 'Could not save the threshold — try again.');
+    } finally {
+      // Latch (Track A5.12): the button ALWAYS comes back, even when the
+      // post-apply refresh throws.
+      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -119,6 +154,7 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
         final bool paired = widget.api != null;
         final int? rssi = widget.proximity.lastRssi;
         final bool near = widget.proximity.isNear;
+        final String? bleCause = widget.proximity.bleCause;
         final Color pillColor =
             near ? BuddyColors.success : BuddyColors.warning;
 
@@ -159,6 +195,24 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
                         'Pair with the laptop first — the threshold lives on the server.',
                         style: small,
                       ),
+                    ),
+                  ],
+                ),
+              ],
+              // Known FAR cause (Track A5.9): Bluetooth off / permission
+              // denied renders here in plain words — never silent FAR.
+              if (bleCause != null) ...<Widget>[
+                const SizedBox(height: BuddySpacing.s3),
+                Row(
+                  children: <Widget>[
+                    const Icon(
+                      Icons.bluetooth_disabled_outlined,
+                      size: 16,
+                      color: BuddyColors.warning,
+                    ),
+                    const SizedBox(width: BuddySpacing.s2),
+                    Expanded(
+                      child: Text(bleCause, style: small),
                     ),
                   ],
                 ),

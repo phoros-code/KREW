@@ -58,6 +58,27 @@ class _PairingScreenState extends State<PairingScreen> {
   }
 
   @override
+  void didUpdateWidget(PairingScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Boot/bt-id restore lands after first build (Track A5.12): resync the
+    // prefill controllers when the incoming props change. Only adopts the
+    // new prop when it differs — never fights active typing, since a prop
+    // change means the shell restored something newer.
+    if (oldWidget.initialHost != widget.initialHost &&
+        _hostController.text != (widget.initialHost ?? '')) {
+      _hostController.text = widget.initialHost ?? '';
+    }
+    if (oldWidget.initialBtDeviceId != widget.initialBtDeviceId &&
+        _btController.text != (widget.initialBtDeviceId ?? '')) {
+      _btController.text = widget.initialBtDeviceId ?? '';
+    }
+    if (oldWidget.initialCertFingerprint != widget.initialCertFingerprint &&
+        _fpController.text != (widget.initialCertFingerprint ?? '')) {
+      _fpController.text = widget.initialCertFingerprint ?? '';
+    }
+  }
+
+  @override
   void dispose() {
     _hostController.dispose();
     _tokenController.dispose();
@@ -70,8 +91,12 @@ class _PairingScreenState extends State<PairingScreen> {
     if (value == null || value.trim().isEmpty) {
       return 'Enter the laptop IP shown by the pairing script.';
     }
-    final parsed = BuddyApi.splitHostPort(value);
-    if (parsed.host.isEmpty) return 'That host does not look valid.';
+    // Same strict gate the client constructs with (Track A5.7): userinfo,
+    // spaces, #/? remnants, and out-of-range ports fail here with form
+    // copy instead of a transport error.
+    if (!BuddyApi.isValidHost(value)) {
+      return 'That host does not look valid — use an IP or hostname, with an optional :port.';
+    }
     return null;
   }
 
@@ -103,8 +128,12 @@ class _PairingScreenState extends State<PairingScreen> {
       _errorMessage = null;
       _errorCode = null;
     });
-    final BuddyApi probe = BuddyApi(host: host, token: token, certFingerprint: fingerprint);
+    BuddyApi? probe;
     try {
+      // Construction validates the host (Track A5.7) — inside the try so a
+      // garbage host that slipped past validation still lands in the error
+      // state instead of escaping uncaught (the old spinner-stop bug shape).
+      probe = BuddyApi(host: host, token: token, certFingerprint: fingerprint);
       await probe.validatePairing();
       await widget.store.savePairing(host: host, token: token);
       await widget.store.saveCertFingerprint(fingerprint);
@@ -118,8 +147,14 @@ class _PairingScreenState extends State<PairingScreen> {
         _errorCode = e.code;
         _errorMessage = _humanize(e);
       });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _errorCode = 'unreachable';
+        _errorMessage = BuddyApi.routeError.message;
+      });
     } finally {
-      probe.close();
+      probe?.close();
       if (mounted) setState(() => _testing = false);
     }
   }
