@@ -15,11 +15,21 @@ This is the design contract your AI coding agent reads before generating or edit
 - Primary/dominant: `#1E5F4A` (deep teal-green) — *not* the default purple-indigo
 - Accent (10%, used sparingly): `#E8A33D` (warm amber) — for the one or two things per screen that should actually draw the eye
 - Status colors (documented meaning required — see "Status meaning table" below): success `#3A8B5C`, warning `#D9932A`, error `#C4453D`
+- Accessible text variants (Track C1 — WCAG AA, same hues, darker/lighter only):
+  - `warningOnLight #8A5A12` (5.37:1 on `#F5F4F0`) / `warningOnDark #E1A955` (8.83:1 on `#12131A`)
+  - `successOnLight #2E6F4A` (5.47:1 on `#F5F4F0`) / `successOnDark #4E976C` (5.26:1 on `#12131A`)
+  - `errorOnLight #B03E37` (5.31:1 on `#F5F4F0`) / `errorOnDark #D06A64` (5.23:1 on `#12131A`)
+  - `outlineOnDark #6E6F7A` (3.72:1 on `#12131A`) for the M3 `outline` slot on dark; `hairlineOnDark #2E2F3A` stays as `outlineVariant` (decorative only, 1.40:1, never for meaning-carrying borders/text)
+  - Rule: 11px badge/pill labels, error titles, and error copy ALWAYS use the OnLight/OnDark variant matching the current brightness. The base hues (`#D9932A`/`#3A8B5C`/`#C4453D`) remain for large graphics only (6px dots, fills) where they are non-text.
 
 **Typography**
-- Headline/display: Space Grotesk (geometric, technical without being generic; chosen for the "trusted console" feel)
-- Body: IBM Plex Sans (humanist, distinct from the headline; readable at small sizes for logs)
-- Monospace (for logs, tokens, command output): JetBrains Mono
+- Headline/display: Space Grotesk (geometric, technical without being generic; chosen for the "trusted console" feel) — `fontFamily: 'Space Grotesk'`
+- Body: IBM Plex Sans (humanist, distinct from the headline; readable at small sizes for logs) — `fontFamily: 'IBM Plex Sans'`
+- Monospace (for logs, tokens, command output): JetBrains Mono — `fontFamily: 'JetBrains Mono'`
+- Loading (TODO-FONTS — bundled-fonts pending): TTFs to be added under `assets/fonts/` with a `fonts:` block in `mobile/pubspec.yaml` (expected files: `SpaceGrotesk-Regular.ttf`, `SpaceGrotesk-Medium.ttf`, `SpaceGrotesk-SemiBold.ttf`, `SpaceGrotesk-Bold.ttf`, `IBMPlexSans-Regular.ttf`, `IBMPlexSans-Medium.ttf`, `IBMPlexSans-SemiBold.ttf`, `IBMPlexSans-Bold.ttf`, `JetBrainsMono-Regular.ttf`, `JetBrainsMono-Medium.ttf`, `JetBrainsMono-Bold.ttf`). Until they land, `BuddyTheme` uses `TextStyle(fontFamily)` with `fontFamilyFallback: ['Roboto']` and NO runtime CDN (`google_fonts` removed). Known deviation: without bundled TTFs the runtime falls back to Roboto — honest, offline-safe, and asserted in theme tests.
+
+**Navigation (Track C1)**
+- M3 `NavigationBar` (not M2 `BottomNavigationBar`): 4 destinations (Pair/Chat/Tasks/Screen), labels always shown, 8px indicator (`BuddyRadii.interactive`), `indicatorColor` = `primaryContainer` (light) / `primary` (dark), selected = primary/white, unselected = muted ink. Behavior identical to the old bar.
 
 **Spacing scale**
 - Base unit: 4px. Scale: 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64. Don't invent arbitrary values outside this scale.
