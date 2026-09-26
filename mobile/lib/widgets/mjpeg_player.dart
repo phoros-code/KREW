@@ -47,6 +47,7 @@ class MjpegPlayer extends StatefulWidget {
     required this.onStop,
     this.client,
     this.certFingerprint,
+    this.stallTimeout = const Duration(seconds: 5),
   });
 
   /// Full stream URL including `?consent_id=` (BuddyApi.screenStreamUrl).
@@ -72,6 +73,11 @@ class MjpegPlayer extends StatefulWidget {
   /// Null/empty trusts nothing — fail closed, like BuddyApi.
   final String? certFingerprint;
 
+  /// Bytes-idle budget (Track A5.3): no chunk for this long after the
+  /// stream opened means the preview ended server-side — same ended state
+  /// as a clean close. Injectable so tests run on milliseconds.
+  final Duration stallTimeout;
+
   @override
   State<MjpegPlayer> createState() => _MjpegPlayerState();
 }
@@ -89,9 +95,11 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
 
   http.Client? _ownedClient;
   StreamSubscription<List<int>>? _sub;
+  Timer? _stallTimer;
   List<int> _carry = <int>[];
   Uint8List? _frame;
   bool _failed = false;
+  bool _ended = false;
 
   http.Client get _transport => widget.client ?? _ownedClient!;
 
@@ -108,11 +116,31 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
 
   @override
   void dispose() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
     _sub?.cancel();
+    _sub = null;
     // Only close what we created — an injected test/mock client belongs to
     // its owner.
     _ownedClient?.close();
     super.dispose();
+  }
+
+  /// (Re)arm the bytes-idle watchdog: every chunk resets it; firing means
+  /// the server stopped framing — same ended state as a clean close.
+  void _armStallWatchdog() {
+    _stallTimer?.cancel();
+    _stallTimer = Timer(widget.stallTimeout, () {
+      if (!mounted || _failed || _ended) return;
+      _sub?.cancel();
+      _sub = null;
+      setState(() => _ended = true);
+    });
+  }
+
+  void _onStreamDone() {
+    _stallTimer?.cancel();
+    if (mounted && !_failed) setState(() => _ended = true);
   }
 
   Future<void> _start() async {
@@ -122,6 +150,12 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
       request.headers.addAll(widget.headers);
       final http.StreamedResponse response =
           await _transport.send(request).timeout(_timeout);
+      // Unmounted while connecting: drop the just-opened response instead
+      // of listening into a dead widget (unmount-during-connect leak).
+      if (!mounted) {
+        await response.stream.listen((_) {}).cancel();
+        return;
+      }
       if (response.statusCode < 200 || response.statusCode >= 300) {
         // Drain the small error body so the connection can be reused, then
         // show the designed error state (Retry routes via onRetry, which
@@ -131,11 +165,14 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
         setState(() => _failed = true);
         return;
       }
+      _armStallWatchdog();
       _sub = response.stream.listen(
         _onChunk,
         onError: (_) {
+          _stallTimer?.cancel();
           if (mounted) setState(() => _failed = true);
         },
+        onDone: _onStreamDone,
         cancelOnError: true,
       );
     } on Object {
@@ -150,6 +187,8 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
   /// the same framing the mjpeg_stream package scans for — then validate each
   /// candidate with the package's [MjpegPreprocessor] before painting.
   void _onChunk(List<int> chunk) {
+    if (_failed || _ended) return;
+    _armStallWatchdog();
     _carry.addAll(chunk);
     if (_carry.length > _maxBuffer) {
       _carry = _carry.sublist(_carry.length - _maxBuffer);
@@ -202,12 +241,13 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
     // Host only — the URL query carries the live grant and is never shown.
     final String host = Uri.tryParse(widget.streamUrl)?.host ?? '';
     final Uint8List? frame = _frame;
+    final bool showError = _failed || _ended;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        if (_failed)
+        if (showError)
           Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
@@ -218,13 +258,15 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
               ),
               const SizedBox(height: BuddySpacing.s3),
               Text(
-                'Stream dropped — retry',
+                _ended ? 'Preview ended' : 'Stream dropped — retry',
                 style: Theme.of(context).textTheme.titleMedium,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BuddySpacing.s2),
               Text(
-                'The live frames stopped — the grant may have expired. Retry re-checks with the laptop; nothing reconnects blindly.',
+                _ended
+                    ? 'The laptop closed the preview stream. Retry re-checks the grant with the laptop; nothing reconnects blindly.'
+                    : 'The live frames stopped — the grant may have expired. Retry re-checks with the laptop; nothing reconnects blindly.',
                 style: small,
                 textAlign: TextAlign.center,
               ),
