@@ -27,12 +27,17 @@ class PreviewScreen extends StatefulWidget {
     required this.proximity,
     this.proximityService,
     this.onCalibrated,
+    this.suspendSignal = 0,
   });
 
   final BuddyApi? api;
   final ProximityMode proximity;
   final ProximityService? proximityService;
   final Future<void> Function()? onCalibrated;
+
+  /// Lifecycle suspend counter from the app shell (Track A5.5) — forwarded
+  /// to [ScreenPreview], which revokes + unmounts on every bump.
+  final int suspendSignal;
 
   @override
   State<PreviewScreen> createState() => _PreviewScreenState();
@@ -96,6 +101,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
             api: widget.api,
             proximity: widget.proximity,
             source: _source,
+            suspendSignal: widget.suspendSignal,
           ),
           if (service != null && applied != null) ...<Widget>[
             const SizedBox(height: BuddySpacing.s4),

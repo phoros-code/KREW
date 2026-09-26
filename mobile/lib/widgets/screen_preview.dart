@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/buddy_api.dart';
@@ -27,11 +29,18 @@ class ScreenPreview extends StatefulWidget {
     required this.api,
     required this.proximity,
     this.source = PreviewSource.screen,
+    this.suspendSignal = 0,
   });
 
   final BuddyApi? api;
   final ProximityMode proximity;
   final PreviewSource source;
+
+  /// Lifecycle suspend counter owned by the app shell (Track A5.5). Every
+  /// bump means "stop now": leaving the Screen tab or backgrounding revokes
+  /// the live grant first and drops back to needsConsent, which unmounts the
+  /// player. Returning never auto-restarts — the user taps Request again.
+  final int suspendSignal;
 
   @override
   State<ScreenPreview> createState() => _ScreenPreviewState();
@@ -75,12 +84,52 @@ class _ScreenPreviewState extends State<ScreenPreview> {
   void didUpdateWidget(ScreenPreview oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.source != widget.source) {
-      // Separate consent scopes: drop the old grant id and start over, so a
-      // screen grant is never sent to /webcam (or vice versa).
+      // Separate consent scopes: the OLD grant must be revoked server-side
+      // (best-effort, fire-and-forget — didUpdateWidget is sync) before the
+      // local reset, so toggling never orphans a live grant on the laptop
+      // and a screen grant is never sent to /webcam (or vice versa).
+      final String? oldId = _consentId;
+      final PreviewSource oldSource = oldWidget.source;
       _phase = _PreviewPhase.needsConsent;
       _consentId = null;
       _errorMessage = '';
+      if (oldId != null && oldId.isNotEmpty) {
+        unawaited(_revokeGrant(oldId, oldSource));
+      }
+    } else if (widget.suspendSignal > oldWidget.suspendSignal) {
+      // App shell ordered a stop (tab switch / backgrounding): revoke-first
+      // like the Stop button, which also unmounts a live player.
+      _stopPreview();
     }
+  }
+
+  /// Best-effort revoke of one grant id on its own scope. 404/409 and
+  /// transport failures are swallowed — the caller already reset local UI.
+  Future<void> _revokeGrant(String id, PreviewSource source) async {
+    final BuddyApi? api = widget.api;
+    if (api == null) return;
+    try {
+      if (source == PreviewSource.webcam) {
+        await api.revokeWebcamConsent(id);
+      } else {
+        await api.revokeScreenConsent(id);
+      }
+    } on BuddyApiException {
+      // Best-effort — fall through.
+    } catch (_) {
+      // A revoke never throws into the widget tree.
+    }
+  }
+
+  @override
+  void dispose() {
+    // Last chance: a live grant must not outlive this widget (e.g. the tab
+    // unmounts while streaming). Best-effort — dispose cannot await.
+    final String? id = _consentId;
+    if (id != null && id.isNotEmpty) {
+      unawaited(_revokeGrant(id, widget.source));
+    }
+    super.dispose();
   }
 
   /// Step 1: create the consent request on the laptop.
@@ -199,6 +248,11 @@ class _ScreenPreviewState extends State<ScreenPreview> {
   /// Human messages only — raw JSON never reaches the UI (API.md). Must be
   /// called inside setState. [restartStream] remounts the player with a fresh
   /// key so a re-approved grant starts a new stream.
+  ///
+  /// Dead-grant rule (Track A5.12): forbidden / unauthorized / unreachable
+  /// mean the old grant id is useless (proximity flipped, token died, route
+  /// gone) — the id is cleared so Retry requests a FRESH consent instead of
+  /// re-probing the dead grant. consentRequired/rateLimited keep the id.
   void _applyGrantStatus(ScreenStatus status, {bool restartStream = false}) {
     switch (status) {
       case ScreenStatus.available:
@@ -215,14 +269,17 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case ScreenStatus.notImplemented:
         _phase = _PreviewPhase.notImplemented;
       case ScreenStatus.forbidden:
+        _consentId = null; // dead grant — Retry requests fresh consent
         _phase = _PreviewPhase.error;
         _errorMessage =
             '$_previewNoun needs near proximity. Move closer to the laptop and try again.';
       case ScreenStatus.unauthorized:
+        _consentId = null; // dead grant — Retry requests fresh consent
         _phase = _PreviewPhase.error;
         _errorMessage =
             'The pairing token was rejected. Re-pair from the Pair tab.';
       case ScreenStatus.unreachable:
+        _consentId = null; // dead grant — Retry requests fresh consent
         _phase = _PreviewPhase.error;
         _errorMessage =
             'No route to the laptop — check the IP and Wi-Fi, then retry.';
