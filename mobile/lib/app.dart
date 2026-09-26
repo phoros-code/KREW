@@ -535,10 +535,18 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
-                  const Icon(
-                    Icons.error_outline,
-                    size: 32,
-                    color: BuddyColors.error,
+                  Builder(
+                    builder: (BuildContext inner) {
+                      final bool dark =
+                          Theme.of(inner).brightness == Brightness.dark;
+                      return Icon(
+                        Icons.error_outline,
+                        size: 32,
+                        color: dark
+                            ? BuddyColors.errorOnDark
+                            : BuddyColors.errorOnLight,
+                      );
+                    },
                   ),
                   const SizedBox(height: BuddySpacing.s3),
                   Text(
@@ -625,28 +633,34 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                 children: <Widget>[
                   if (_api != null)
                     _UnpairStrip(savedHost: _savedHost, onUnpair: _onUnpair),
-                  BottomNavigationBar(
-                    currentIndex: _tab,
-                    onTap: _onTab,
-                    items: const <BottomNavigationBarItem>[
-                      BottomNavigationBarItem(
+                  // Track C1: M3 NavigationBar (not M2 BottomNavigationBar).
+                  // 4 destinations + labels + behavior identical; styling
+                  // (8px indicator, primary/ink colors) comes from
+                  // BuddyTheme.navigationBarTheme.
+                  NavigationBar(
+                    selectedIndex: _tab,
+                    onDestinationSelected: _onTab,
+                    labelBehavior:
+                        NavigationDestinationLabelBehavior.alwaysShow,
+                    destinations: const <NavigationDestination>[
+                      NavigationDestination(
                         icon: Icon(Icons.link_outlined),
-                        activeIcon: Icon(Icons.link),
+                        selectedIcon: Icon(Icons.link),
                         label: 'Pair',
                       ),
-                      BottomNavigationBarItem(
+                      NavigationDestination(
                         icon: Icon(Icons.chat_bubble_outline),
-                        activeIcon: Icon(Icons.chat_bubble),
+                        selectedIcon: Icon(Icons.chat_bubble),
                         label: 'Chat',
                       ),
-                      BottomNavigationBarItem(
+                      NavigationDestination(
                         icon: Icon(Icons.assignment_outlined),
-                        activeIcon: Icon(Icons.assignment),
+                        selectedIcon: Icon(Icons.assignment),
                         label: 'Tasks',
                       ),
-                      BottomNavigationBarItem(
+                      NavigationDestination(
                         icon: Icon(Icons.monitor_outlined),
-                        activeIcon: Icon(Icons.monitor),
+                        selectedIcon: Icon(Icons.monitor),
                         label: 'Screen',
                       ),
                     ],

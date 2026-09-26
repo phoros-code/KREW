@@ -15,27 +15,35 @@ void main() {
   // grey/red "something broke" banner (Track A5.6). Plain TextStyle on
   // purpose — theme/font loading may be the thing that failed.
   ErrorWidget.builder = (FlutterErrorDetails details) {
-    return Container(
-      padding: const EdgeInsets.all(BuddySpacing.s4),
-      decoration: BoxDecoration(
-        border: Border.all(color: BuddyColors.error),
-        borderRadius: const BorderRadius.all(
-          Radius.circular(BuddyRadii.container),
-        ),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Icon(Icons.error_outline, size: 18, color: BuddyColors.error),
-          SizedBox(width: BuddySpacing.s2),
-          Expanded(
-            child: Text(
-              'Something went wrong showing this part — restart the app. Nothing was sent anywhere.',
-              style: TextStyle(color: BuddyColors.error, fontSize: 12.5),
+    return Builder(
+      builder: (BuildContext context) {
+        final bool dark =
+            MediaQuery.platformBrightnessOf(context) == Brightness.dark;
+        final Color errorText =
+            dark ? BuddyColors.errorOnDark : BuddyColors.errorOnLight;
+        return Container(
+          padding: const EdgeInsets.all(BuddySpacing.s4),
+          decoration: BoxDecoration(
+            border: Border.all(color: errorText),
+            borderRadius: const BorderRadius.all(
+              Radius.circular(BuddyRadii.container),
             ),
           ),
-        ],
-      ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(Icons.error_outline, size: 18, color: errorText),
+              const SizedBox(width: BuddySpacing.s2),
+              Expanded(
+                child: Text(
+                  'Something went wrong showing this part — restart the app. Nothing was sent anywhere.',
+                  style: TextStyle(color: errorText, fontSize: 12.5),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   };
   // Async errors outside Flutter's zone (no telemetry backend by design —
