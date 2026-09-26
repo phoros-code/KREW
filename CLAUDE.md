@@ -122,3 +122,14 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Security-review note fixed: `ScreenStatus.rateLimited` — 429 probes now show throttling copy, grant kept for Retry.
 - `opencv-python>=4.8.0` declared in pyproject only (requirements.txt 3.14 set untouched); opencv NOT installed — runtime dep for webcam use.
 - v0.1.0 tag exists; extras above are Unreleased (CHANGELOG) on master past the tag.
+
+## Session notes (2026-09-27, Track A hardening → v0.2.0)
+
+- Executed the master-plan Track A via subagents (Backend Architect × A1/A2/A3/A4/A6-backend, Mobile App Builder × A5/A6-mobile), max-commits policy, pushed after every phase.
+- A1 (6 commits): stream token re-verify, idle fix, /command caps, per-IP lockout, limiter eviction, atomic writes, corrupt-yaml error, rotate_token CLI. 192 pytest.
+- A2 (4 commits): redaction, log rotation, task_failed on config failure, SSE ASGI response + keepalive, uniform envelope. 209 pytest.
+- A3 (7 commits + 1 own fix): laptop-only approval with backfill (legacy-allow fallback found during review and closed — empty secret now generates+p persists on load), stream caps, single handle, streams config, docs rewritten. 228 pytest.
+- A4 (10 commits): SSRF guard, typed-plan launch, jail-key removal, wake-from-YAML, fail_mode enforcement, scripts read YAML, tempdir replies, dep truth, doc corrections. 249 pytest.
+- A5 (9 commits): all 7 mobile CRITICALs + 12 fixes; permission_handler added. 115 dart.
+- A6 (3 commits + CI): 47 backend gap tests, 68 mobile gap tests + integration shell, CI concurrency + coverage artifact. 296 pytest + 183 dart.
+- Tag: v0.2.0. Next per plan: Track C (UI/UX), Track D (platform), Track E (verification incl. hardware §3–§5), then Track B (capabilities → v0.3.0).
