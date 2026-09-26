@@ -38,6 +38,21 @@ class ProximityService extends ChangeNotifier {
   ProximityMode get mode => _mode;
   BuddyConnection get connection => _connection;
 
+  /// Why the phone is FAR, when the cause is known (Track A5.9): e.g.
+  /// "Bluetooth off" or "Permission denied — enable … in Settings". Null
+  /// means no known cause (plain out-of-range / no BLE configured). The
+  /// calibrate screen and the header FAR reason render this; FAR still
+  /// blocks commands either way — the cause is explanatory, never a bypass.
+  String? _bleCause;
+  String? get bleCause => _bleCause;
+
+  void setBleCause(String? cause) {
+    if (_bleCause != cause) {
+      _bleCause = cause;
+      notifyListeners();
+    }
+  }
+
   bool get isNear => _mode == ProximityMode.near;
 
   /// Commands are allowed only when NEAR *and* the laptop is reachable.
