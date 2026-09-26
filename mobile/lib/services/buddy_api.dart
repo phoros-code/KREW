@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HttpClient, HttpException, HandshakeException, SocketException, TlsException, X509Certificate;
+import 'dart:io' show HttpClient, HttpException, HandshakeException, InternetAddress, SocketException, TlsException, X509Certificate;
 
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
@@ -157,6 +157,15 @@ class BuddyApi {
   }) : _client = client ?? BuddyApi.newPinnedClient(certFingerprint),
        _timeout = timeout,
        certFingerprint = certFingerprint {
+    // Strict host gate (Track A5.7): garbage never reaches Uri.https —
+    // user@host, spaces, #/? fragments, and out-of-range ports fail here
+    // with the same unreachable envelope the transport maps to.
+    if (!BuddyApi.isValidHost(host)) {
+      throw const BuddyApiException(
+        code: 'unreachable',
+        message: 'That host does not look valid — check the IP and try again.',
+      );
+    }
     final parsed = BuddyApi.splitHostPort(host);
     _hostname = parsed.host;
     _port = parsed.port;
@@ -219,8 +228,9 @@ class BuddyApi {
 
   String get displayHost => _port == 8443 ? _hostname : '$_hostname:$_port';
 
-  /// Split user input like "192.168.1.10", "192.168.1.10:8443", or a pasted
-  /// "https://192.168.1.10:8443/" URL into hostname + port. Pure — unit tested.
+  /// Split user input like "192.168.1.10", "192.168.1.10:8443", a pasted
+  /// "https://192.168.1.10:8443/" URL, or a bracketed "[::1]:8443" IPv6
+  /// literal into hostname + port. Pure — unit tested.
   static ({String host, int port}) splitHostPort(String input) {
     String v = input.trim();
     if (v.startsWith('http://')) v = v.substring('http://'.length);
@@ -229,6 +239,24 @@ class BuddyApi {
     if (slash >= 0) v = v.substring(0, slash);
     v = v.trim();
     if (v.isEmpty) return (host: '', port: 8443);
+    // Bracketed IPv6: "[::1]" or "[::1]:8443". The brackets stay on the
+    // host part; [isValidHost] strips them before the literal check.
+    if (v.startsWith('[')) {
+      final int close = v.indexOf(']');
+      if (close > 0) {
+        final String host = v.substring(0, close + 1);
+        final String rest = v.substring(close + 1);
+        if (rest.isEmpty) return (host: host, port: 8443);
+        if (rest.startsWith(':')) {
+          final int? port = int.tryParse(rest.substring(1));
+          if (port != null && port > 0 && port < 65536) {
+            return (host: host, port: port);
+          }
+        }
+        return (host: host, port: 8443);
+      }
+      return (host: v, port: 8443);
+    }
     // IPv6 literals stay intact; only split a single trailing :port.
     final int lastColon = v.lastIndexOf(':');
     if (lastColon > 0 && v.indexOf(':') == lastColon) {
@@ -242,6 +270,36 @@ class BuddyApi {
   }
 
   Uri _uri(String path) => Uri.https('$_hostname:$_port', path);
+
+  /// Strict host gate shared by the constructor (throws unreachable) and the
+  /// pairing validator (shows the same verdict as form copy). Accepts:
+  /// plain hostnames (`laptop.local`), IPv4, IPv6 literals (bracketed or
+  /// bare), each with an optional `:port` in range 1..65535. Rejects
+  /// anything carrying userinfo (`user@host`), whitespace, `#`/`?` URL
+  /// remnants, path separators, or a colon that is not valid IPv6.
+  /// Pure — fuzz-tested.
+  static bool isValidHost(String input) {
+    final parsed = BuddyApi.splitHostPort(input);
+    String host = parsed.host;
+    if (host.isEmpty) return false;
+    // Bracketed IPv6 must be balanced; the brackets come off for the check.
+    if (host.startsWith('[') || host.endsWith(']')) {
+      if (!(host.startsWith('[') && host.endsWith(']'))) return false;
+      host = host.substring(1, host.length - 1);
+      if (host.isEmpty) return false;
+    }
+    // URL remnants and injection shapes never belong in a host field.
+    if (host.contains(RegExp(r'[@\s#?/\\]'))) return false;
+    // IP literals (v4 + v6, incl. zone ids) are decided by the platform
+    // parser — no hand-rolled hex table to get wrong.
+    if (InternetAddress.tryParse(host) != null) return true;
+    // A colon that is not a valid IPv6 literal is a broken :port (e.g.
+    // :70000, which splitHostPort already refused) — reject, don't guess.
+    if (host.contains(':')) return false;
+    return RegExp(
+      r'^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$',
+    ).hasMatch(host);
+  }
 
   Map<String, String> get _authHeaders => <String, String>{
     'Authorization': 'Bearer $_token',
@@ -279,6 +337,10 @@ class BuddyApi {
       throw tlsError;
     } on http.ClientException {
       throw routeError;
+    } catch (_) {
+      // Anything unexpected (bad-state clients, platform quirks) is still
+      // "no route" to the user — never an uncaught crash.
+      throw routeError;
     }
   }
 
@@ -305,6 +367,8 @@ class BuddyApi {
     } on TlsException {
       throw tlsError;
     } on http.ClientException {
+      throw routeError;
+    } catch (_) {
       throw routeError;
     }
     if (resp.statusCode != 200) {
@@ -424,6 +488,8 @@ class BuddyApi {
       throw tlsError;
     } on http.ClientException {
       throw routeError;
+    } catch (_) {
+      throw routeError;
     }
     if (resp.statusCode != 200) {
       throw BuddyApiException.fromRaw(resp.statusCode, resp.body);
@@ -449,7 +515,18 @@ class BuddyApi {
 
   /// GET /events as an SSE stream (near or far — notifications only).
   /// Implemented with an http streamed request per the project constraints.
-  Stream<BuddyEvent> watchEvents() async* {
+  ///
+  /// The first yield is a synthetic `connected` frame the moment HTTP 200
+  /// arrives — before any task frame. The app treats it as "stream open"
+  /// (online + reconnect-backoff reset) without waiting for the first real
+  /// event, which fixes the fresh-pair deadlock where the command bar sat
+  /// on "Connecting…" with an empty log. It is filtered out of the visible
+  /// log; [TaskList.applyEvent] ignores unknown types as a backstop.
+  ///
+  /// [onActivity] fires for every line received (frames AND `:comments`,
+  /// which are server heartbeats). The app's stall watchdog resets on it —
+  /// silence on both channels for 30s means the stream is dead.
+  Stream<BuddyEvent> watchEvents({void Function()? onActivity}) async* {
     final http.Request request = http.Request('GET', _uri('/events'));
     request.headers.addAll(_authHeaders);
     request.headers['Accept'] = 'text/event-stream';
@@ -469,12 +546,17 @@ class BuddyApi {
       throw tlsError;
     } on http.ClientException {
       throw routeError;
+    } catch (_) {
+      throw routeError;
     }
 
     if (response.statusCode != 200) {
       final String body = await response.stream.bytesToString();
       throw BuddyApiException.fromRaw(response.statusCode, body);
     }
+
+    // HTTP 200: the stream is open. Synthetic frame first (see doc).
+    yield BuddyEvent(type: 'connected', receivedAt: DateTime.now());
 
     String? currentEvent;
     final StringBuffer dataBuf = StringBuffer();
@@ -483,6 +565,7 @@ class BuddyApi {
     await for (final String line in response.stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())) {
+      onActivity?.call();
       if (line.startsWith('event:')) {
         currentEvent = line.substring('event:'.length).trim();
       } else if (line.startsWith('data:')) {
@@ -501,7 +584,8 @@ class BuddyApi {
         dataBuf.clear();
         hasData = false;
       }
-      // SSE comments (lines starting with ':') are heartbeats — ignored.
+      // SSE comments (lines starting with ':') are heartbeats — they count
+      // as activity via onActivity above but yield no frame.
     }
   }
 
@@ -543,6 +627,8 @@ class BuddyApi {
     } on TlsException {
       throw tlsError;
     } on http.ClientException {
+      throw routeError;
+    } catch (_) {
       throw routeError;
     } finally {
       probe.close();
@@ -694,6 +780,9 @@ class BuddyApi {
       return ScreenStatus.unreachable;
     } on http.ClientException {
       return ScreenStatus.unreachable;
+    } catch (_) {
+      // A probe never throws — an unreadable answer is "unreachable".
+      return ScreenStatus.unreachable;
     }
   }
 
@@ -790,8 +879,7 @@ class BuddyApi {
   /// on the separate webcam scope — same streamed-send probe (a 200 is an
   /// infinite MJPEG body), same status mapping INCLUDING rateLimited, same
   /// transport failures mapping to [ScreenStatus.unreachable].
-  Future<ScreenStatus> checkWebcam({String? consentId}) async {
-    try {
+  Future<ScreenStatus> checkWebcam({String? consentId}) async {    try {
       Uri uri = _uri('/webcam');
       if (consentId != null && consentId.isNotEmpty) {
         uri = uri.replace(
@@ -848,6 +936,9 @@ class BuddyApi {
     } on TlsException {
       return ScreenStatus.unreachable;
     } on http.ClientException {
+      return ScreenStatus.unreachable;
+    } catch (_) {
+      // A probe never throws — an unreadable answer is "unreachable".
       return ScreenStatus.unreachable;
     }
   }
