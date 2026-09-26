@@ -1,7 +1,7 @@
 name: everyday_buddy
 description: Everyday Buddy phone companion — local-first control for the laptop agent.
 publish_to: "none"
-version: 0.1.0+1
+version: 0.2.0+1
 
 environment:
   sdk: ^3.2.0
