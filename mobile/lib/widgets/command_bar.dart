@@ -41,6 +41,9 @@ class _CommandBarState extends State<CommandBar> {
     setState(() => _busy = true);
     try {
       await widget.onSend(text);
+      // Unmounted while sending (tab switch disposes the bar): the
+      // controller is gone — return before touching it.
+      if (!mounted) return;
       _controller.clear();
     } finally {
       if (mounted) setState(() => _busy = false);

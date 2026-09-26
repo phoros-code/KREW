@@ -89,7 +89,10 @@ class TaskListScreen extends StatelessWidget {
             ),
           if (streamError != null) const SizedBox(height: BuddySpacing.s4),
 
-          // Empty states.
+          // Empty states. The no-tasks box renders independently of the
+          // stream error (Track A5.12): with zero tasks AND a dead stream
+          // the user sees both the error and the empty state, never a bare
+          // error with no orientation.
           if (!isPaired)
             _EmptyBox(
               hairline: hairline,
@@ -98,7 +101,7 @@ class TaskListScreen extends StatelessWidget {
               title: 'No laptop paired yet',
               hint: 'Pair from the Pair tab — tasks you send will appear here.',
             )
-          else if (items.isEmpty && streamError == null)
+          else if (items.isEmpty)
             _EmptyBox(
               hairline: hairline,
               muted: muted,

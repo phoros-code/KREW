@@ -14,11 +14,18 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
     required this.proximity,
     required this.connection,
     required this.runningCount,
+    this.farReason,
   });
 
   final ProximityMode proximity;
   final BuddyConnection connection;
   final int runningCount;
+
+  /// Known FAR cause from the BLE watch (Track A5.9: "Bluetooth off",
+  /// "Permission denied — …"). Explanatory only — carried on the FAR pill's
+  /// semantic label so screen readers announce it. No visual change: the
+  /// 56px box, pills, and tokens are untouched.
+  final String? farReason;
 
   @override
   Size get preferredSize => const Size.fromHeight(56);
@@ -32,6 +39,11 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
 
     final bool near = proximity == ProximityMode.near;
     final Color proxColor = near ? BuddyColors.success : BuddyColors.warning;
+    final String proxSemantic = near
+        ? 'Proximity near — full control available'
+        : (farReason == null
+              ? 'Proximity far — notifications only, commands blocked'
+              : 'Proximity far — $farReason');
 
     final Color connColor;
     final String connLabel;
@@ -55,69 +67,68 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
         connIcon = Icons.wifi_find;
     }
 
+    // Fixed 56px content box with NO inner SafeArea (Track A5.2): Scaffold
+    // sizes the appBar slot from preferredSize and adds the system top
+    // padding itself, so an inner SafeArea double-counted the notch and
+    // clipped the pills. Pills align to the 56px box on every device.
     return Container(
       height: 56,
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: hairline)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: BuddySpacing.s4),
-      child: SafeArea(
-        bottom: false,
-        child: Row(
-          children: <Widget>[
-            _Pill(
-              color: proxColor,
-              icon: near ? Icons.lock_open : Icons.lock_outline,
-              label: near ? 'NEAR' : 'FAR',
-              semantic: near
-                  ? 'Proximity near — full control available'
-                  : 'Proximity far — notifications only, commands blocked',
-            ),
-            const SizedBox(width: BuddySpacing.s2),
-            _Pill(
-              color: connColor,
-              icon: connIcon,
-              label: connLabel,
-              semantic: connSemantic,
-            ),
-            const Spacer(),
-            Semantics(
-              label: runningCount > 0
-                  ? '$runningCount tasks running'
-                  : 'No tasks running',
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Icon(
-                    runningCount > 0
-                        ? Icons.sync
-                        : Icons.check_circle_outline,
-                    size: 16,
+      child: Row(
+        children: <Widget>[
+          _Pill(
+            color: proxColor,
+            icon: near ? Icons.lock_open : Icons.lock_outline,
+            label: near ? 'NEAR' : 'FAR',
+            semantic: proxSemantic,
+          ),
+          const SizedBox(width: BuddySpacing.s2),
+          _Pill(
+            color: connColor,
+            icon: connIcon,
+            label: connLabel,
+            semantic: connSemantic,
+          ),
+          const Spacer(),
+          Semantics(
+            label: runningCount > 0
+                ? '$runningCount tasks running'
+                : 'No tasks running',
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Icon(
+                  runningCount > 0
+                      ? Icons.sync
+                      : Icons.check_circle_outline,
+                  size: 16,
+                  color: runningCount > 0
+                      ? BuddyColors.primary
+                      : (dark
+                            ? BuddyColors.inkMutedOnDark
+                            : BuddyColors.inkMutedOnLight),
+                ),
+                const SizedBox(width: BuddySpacing.s2),
+                Text(
+                  runningCount > 0 ? '$runningCount RUNNING' : 'IDLE',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
                     color: runningCount > 0
                         ? BuddyColors.primary
                         : (dark
                               ? BuddyColors.inkMutedOnDark
                               : BuddyColors.inkMutedOnLight),
                   ),
-                  const SizedBox(width: BuddySpacing.s2),
-                  Text(
-                    runningCount > 0 ? '$runningCount RUNNING' : 'IDLE',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.6,
-                      color: runningCount > 0
-                          ? BuddyColors.primary
-                          : (dark
-                                ? BuddyColors.inkMutedOnDark
-                                : BuddyColors.inkMutedOnLight),
-                    ),
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

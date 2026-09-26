@@ -63,6 +63,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       await widget.onSend(text);
     } on BuddyApiException catch (e) {
+      if (!mounted) return;
       setState(() => _sendError = _humanizeSend(e));
     } finally {
       if (mounted) setState(() => _sending = false);
