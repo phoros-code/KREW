@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HttpClient, HttpException, HandshakeException, InternetAddress, SocketException, TlsException, X509Certificate;
+import 'dart:io' show File, FileSystemException, HttpClient, HttpException, HandshakeException, InternetAddress, SocketException, TlsException, X509Certificate;
 
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
@@ -61,6 +61,8 @@ class BuddyApiException implements Exception {
         return 'unauthorized';
       case 403:
         return 'forbidden';
+      case 413:
+        return 'body_too_large';
       case 429:
         return 'locked_out';
       case 501:
@@ -78,6 +80,8 @@ class BuddyApiException implements Exception {
         return 'Invalid or expired token.';
       case 403:
         return 'Requires near proximity.';
+      case 413:
+        return 'The request body was too large.';
       case 429:
         return 'Too many failed attempts — try again later.';
       case 501:
@@ -97,6 +101,23 @@ class CommandResult {
   final String taskId;
   final String status;
 }
+
+/// Typed result of POST /voice/transcribe (Track B4 phone voice).
+///
+/// Empty/inaudible audio is NOT an error: the server answers 200 with
+/// `text: ''` and the UI shows the "try again" retry state.
+class Transcription {
+  const Transcription({required this.text, required this.confidence});
+
+  final String text;
+  final double confidence;
+
+  bool get isEmpty => text.isEmpty;
+}
+
+/// Injectable transcription seam (Track B4): production is
+/// `api.transcribe`; widget tests inject fakes without a server.
+typedef VoiceTranscriber = Future<Transcription> Function(String audioPath);
 
 /// Authenticated proximity config from GET /proximity (API.md).
 class ProximityConfig {
@@ -516,6 +537,91 @@ class BuddyApi {
     throw const BuddyApiException(
       code: 'bad_response',
       message: 'The laptop answered in a shape this app does not understand.',
+    );
+  }
+
+  /// Phone-voice upload cap (Track B4): mirrors the server's 5MB limit —
+  /// oversize files are refused client-side with zero network traffic.
+  static const int voiceMaxBytes = 5 * 1024 * 1024;
+
+  /// Voice uploads allow a full 30s capture plus server STT time.
+  static const Duration voiceTimeout = Duration(seconds: 60);
+
+  /// POST /voice/transcribe (near only, Track B4 phone voice).
+  ///
+  /// Uploads [audioPath] as multipart field `audio` (wav/m4a/mp3/webm) over
+  /// the pinned client and returns the typed transcription. Empty/inaudible
+  /// audio is NOT an error — it returns `Transcription(text: '')` and the
+  /// UI shows the retry state. Non-200 answers map through
+  /// [BuddyApiException.fromRaw] (400/413/401/403/429/501); transport
+  /// failures become the unreachable envelope like every other call.
+  Future<Transcription> transcribe(String audioPath) async {
+    int length;
+    try {
+      length = await File(audioPath).length();
+    } on FileSystemException {
+      throw const BuddyApiException(
+        code: 'bad_request',
+        message: 'Could not read that recording — try again.',
+      );
+    }
+    if (length > voiceMaxBytes) {
+      throw const BuddyApiException(
+        code: 'body_too_large',
+        message: 'That recording is too large to send.',
+      );
+    }
+    http.StreamedResponse resp;
+    try {
+      final http.MultipartRequest request = http.MultipartRequest(
+        'POST',
+        _uri('/voice/transcribe'),
+      );
+      request.headers.addAll(_authHeaders);
+      request.files.add(await http.MultipartFile.fromPath('audio', audioPath));
+      resp = await _client.send(request).timeout(voiceTimeout);
+    } on TimeoutException {
+      throw routeError;
+    } on SocketException {
+      throw routeError;
+    } on HttpException {
+      throw routeError;
+    } on HandshakeException {
+      throw tlsError;
+    } on TlsException {
+      throw tlsError;
+    } on FileSystemException {
+      throw const BuddyApiException(
+        code: 'bad_request',
+        message: 'Could not read that recording — try again.',
+      );
+    } on http.ClientException {
+      throw routeError;
+    } catch (_) {
+      throw routeError;
+    }
+    final String body = await resp.stream.bytesToString();
+    if (resp.statusCode != 200) {
+      throw BuddyApiException.fromRaw(resp.statusCode, body);
+    }
+    try {
+      final dynamic decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic> && decoded['text'] is String) {
+        final dynamic rawConfidence = decoded['confidence'];
+        final double confidence = rawConfidence is num
+            ? rawConfidence.toDouble()
+            : 0.0;
+        return Transcription(
+          text: decoded['text'] as String,
+          confidence: confidence,
+        );
+      }
+    } on FormatException {
+      // Fall through to bad_response below.
+    }
+    throw const BuddyApiException(
+      code: 'bad_response',
+      message: 'The laptop sent a transcription the app could not read.',
     );
   }
 
