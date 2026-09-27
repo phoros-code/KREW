@@ -1,0 +1,31 @@
+# Everyday Buddy — release signing config (Track D).
+#
+# SETUP (once per release machine — NEVER commit the real file):
+#
+#   1. Generate a keystore OUTSIDE the repo (so it can never be committed):
+#
+#      keytool -genkeypair -v `
+#        -keystore C:\secure\everyday-buddy-release.keystore `
+#        -alias everyday-buddy -keyalg RSA -keysize 2048 -validity 10000
+#
+#      (Back up the keystore + passwords somewhere safe. Losing them means a
+#      NEW app id on the Play Store — updates under com.everydaybuddy stop.)
+#
+#   2. Copy THIS file to `android/key.properties` (same folder, no `.example`)
+#      and fill in the four values below.
+#
+#   3. `flutter build apk --release --split-per-abi` (or appbundle).
+#
+# NOTES:
+# - `storeFile` may be absolute (recommended, forward slashes) or relative to
+#   the `android/` folder. Absolute keeps the keystore outside the repo.
+# - When `android/key.properties` is ABSENT, release builds fall back to the
+#   debug signing config so CI and local dev still build. That APK is NOT
+#   shippable — Gradle prints no warning, so check your signing before upload.
+# - `key.properties`, `*.keystore`, and `*.jks` are gitignored (see
+#   `mobile/android/.gitignore` + repo-root `.gitignore`). Do NOT force-add.
+
+storeFile=C:/secure/everyday-buddy-release.keystore
+storePassword=CHANGE_ME_store_password
+keyAlias=everyday-buddy
+keyPassword=CHANGE_ME_key_password

@@ -13,6 +13,11 @@ body.json
 
 # Everyday Buddy secrets — NEVER commit the real file (SECURITY.md)
 config/security.yaml
+# Android release signing (Track D) — real keystore + passwords stay off git.
+# (Also covered by mobile/android/.gitignore; repeated here for visibility.)
+mobile/android/key.properties
+**/*.keystore
+**/*.jks
 *.pem
 *.key
 certs/*.pem
