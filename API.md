@@ -74,8 +74,11 @@ Streams agent lifecycle events as Server-Sent Events, tailing `logs/events.jsonl
 On connect, the server replays the **last 200 events** (bounded — a phone
 reconnecting after days offline must not get the whole log dumped on it;
 full-history-with-pagination is a v1.1 feature), then follows new lines
-until the client disconnects. An attached stream counts as activity for the
-idle timeout — passive followers don't get bricked mid-session.
+until the client disconnects. A passive follow does **not** refresh the idle
+timeout by default (`streams_follow_counts_as_activity: false`) — a stream
+held open past the idle limit or the token's absolute age is ended with a
+typed `idle_expired` / `token_expired` error frame, and the phone re-opens
+it. (Opt-in flag only; long passive watches should expect re-probing.)
 
 ```
 event: task_started
@@ -127,13 +130,26 @@ Consent flow (Track A3, same laptop-only approval rule as `/screen`):
 
 ## Proximity gating summary
 
+All 15 routes. Consent approve/deny additionally require the laptop-only
+credential (loopback origin or `X-Buddy-Approval`), even near.
+
 | Endpoint | Near | Far |
 |---|---|---|
-| `/health` | ✅ | ✅ |
-| `/events` | ✅ | ✅ (notifications only) |
-| `/command` | ✅ | ❌ |
-| `/screen` | ✅ | ❌ |
-| `/webcam` | ✅ | ❌ |
+| `GET /health` | ✅ (no auth) | ✅ (no auth) |
+| `GET /proximity` | ✅ | ✅ (read-only, by design) |
+| `GET /events` | ✅ | ✅ (notifications only) |
+| `POST /command` | ✅ | ❌ |
+| `POST /proximity/threshold` | ✅ | ❌ |
+| `POST /screen/consent` | ✅ (request) | ❌ |
+| `POST /screen/consent/{id}/approve` | ✅ + laptop-only | ❌ |
+| `POST /screen/consent/{id}/deny` | ✅ + laptop-only | ❌ |
+| `POST /screen/consent/{id}/revoke` | ✅ (phone-gated) | ❌ |
+| `GET /screen` | ✅ + live grant | ❌ |
+| `POST /webcam/consent` | ✅ (request) | ❌ |
+| `POST /webcam/consent/{id}/approve` | ✅ + laptop-only | ❌ |
+| `POST /webcam/consent/{id}/deny` | ✅ + laptop-only | ❌ |
+| `POST /webcam/consent/{id}/revoke` | ✅ (phone-gated) | ❌ |
+| `GET /webcam` | ✅ + live grant | ❌ |
 
 If proximity can't be determined, the server defaults to **far** — see `SECURITY.md` → Authorization: proximity gating.
 
