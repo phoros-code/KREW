@@ -44,8 +44,10 @@ def test_rate_limit_locks_out(tmp_path) -> None:
     assert not state.verify("bad-2")
     assert not state.verify("bad-3")
     assert state.is_locked()
-    # Even the right token is rejected while locked.
-    assert not state.verify(settings.token)
+    # Track E1 SHOULD-03 verify-first-then-lock: a correct token always
+    # clears its IP bucket even when previously locked.
+    assert state.verify(settings.token)
+    assert not state.is_locked()
 
 
 def test_lockout_expires(tmp_path) -> None:

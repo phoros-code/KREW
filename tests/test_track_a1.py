@@ -382,10 +382,17 @@ def test_per_ip_lockout_isolation(tmp_path) -> None:
     assert state.is_locked("2.2.2.2") is False
     assert state.is_locked() is True  # legacy any-locked view still reports locked
     assert state.verify(settings.token, client_ip="2.2.2.2") is True
-    # IP-A stays locked even for the right token.
-    assert not state.verify(settings.token, client_ip="1.1.1.1")
-    ok, code = state.verify_with_code(settings.token, client_ip="1.1.1.1")
+    # Track E1 SHOULD-03 verify-first-then-lock: a correct token clears its
+    # own IP bucket even when previously locked (wrong tokens still 429).
+    assert state.verify(settings.token, client_ip="1.1.1.1") is True
+    assert state.is_locked("1.1.1.1") is False
+    # A fresh lockout still gates wrong tokens.
+    for _ in range(5):
+        assert not state.verify("bad-again", client_ip="1.1.1.1")
+    ok, code = state.verify_with_code("still-bad", client_ip="1.1.1.1")
     assert not ok and code == "locked_out"
+    ok, code = state.verify_with_code(settings.token, client_ip="9.9.9.9")
+    assert ok and code == "ok"
 
 
 def test_per_ip_lockout_http_isolation(tmp_path) -> None:
@@ -535,6 +542,12 @@ def test_rotate_script_round_trip(tmp_path, monkeypatch) -> None:
     on_disk = yaml.safe_load(sec.read_text(encoding="utf-8"))
     assert on_disk["auth"]["token"] == new_token
     assert "issued_at" in on_disk["auth"]
+
+    # Track E1 BLOCKER-01 live rotation: the RUNNING app (no rebuild) picks
+    # up the rotation within one request via mtime reload — closes the
+    # masking gap where only a rebuilt app was checked.
+    assert client.get("/proximity", headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 401
+    assert client.get("/proximity", headers={"Authorization": f"Bearer {new_token}"}).status_code == 200
 
     app2 = create_app(security_path=sec, event_log=log)
     client2 = TestClient(app2)
