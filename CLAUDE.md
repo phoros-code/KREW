@@ -140,6 +140,16 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - Re-verification: PASS, but raised 4 follow-ups — fixed directly in build mode: (1) idle reset only on token-change reload (config touches preserve lockouts/idle), (2) bounded mid-load re-read, (3) search backends (SearXNG/DDG) through the pinned transport with bodyless redirect GETs. 313 pytest + 260 dart.
 - Tag: v0.2.1. Remaining: hardware gates §3–§5 (human, physical devices), then Track B (capabilities → v0.3.0).
 
+## Session notes (2026-09-27, Track B capabilities → v0.3.0)
+
+- Executed via subagents (Backend Architect × B1/B2/B3/B4-backend/B5, Mobile App Builder × B4-mobile), max-commits, pushed per phase.
+- B1 (3 commits): LLM planner (strict-JSON + validate_plan + real caps + fallback), real ResearchAgent, injection tests. 350 pytest.
+- B2 (3 commits): live CrewAI spike (qwen2.5:3b, 1.46×, stable) → WIRED behind agents.framework flag (default direct, summaries only). 371 pytest.
+- B3 (4 commits): scoped shell/files execution, ops-consent queue + /ops/* routes (laptop-only), bounded memory. 422 pytest.
+- B4 (5 commits): /voice/transcribe + app record-review-send (record 6.0.0, amplitude meter, never auto-send). 434 pytest + 289 dart.
+- B5 (5 commits + review fixes): browser_act (allowlist + post-goto re-check + self-consent + JS/downloads off), foreground-exact focus, typing stubs; adversarial review FAIL→fixed (redirect, self-guard, exact match, hardening, dead key). 480 pytest.
+- Tag: v0.3.0. Remaining: hardware gates §3–§5 + new B4/B5 gates (human, physical devices).
+
 ## Session notes (2026-09-27, KREW remediation prompt)
 
 - P1: `cryptography==50.0.1` (venv312-verified) added to requirements.txt; dropped stale `sse-starlette` pin. chromadb: latest crewai (1.15.22) still pins `chromadb~=1.1.0`, OSV lists no fix — documented as accepted risk in SECURITY.md (transitive, unreachable, CI light set excludes it).

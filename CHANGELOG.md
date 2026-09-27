@@ -1,5 +1,47 @@
 # Changelog — Everyday Buddy
 
+## v0.3.0 (2026-09-27) — Capabilities (Track B)
+
+The agent is real now: LLM planning, scoped execution, memory, phone
+voice, and a consent-gated browser. Defaults stay fail-closed throughout.
+
+### Planner + research (B1)
+- `build_llm_plan`: the model emits strict-JSON typed plans through the
+  existing `validate_plan`; deterministic builders remain as fallback
+  (`planner: llm|fallback` on every completion event). `max_steps` /
+  `max_recursion_depth` actually fire; `delegate` steps are schema-ready
+  but execution-gated. Fetched content stays data (injection tests).
+- Real `ResearchAgent` (`run_research`, injectable seams); the inlined
+  orchestrator flow now calls it with identical redacted events.
+
+### CrewAI, decided by measurement (B2)
+- Live spike (qwen2.5:3b): crew 1.46× direct latency, coherent, stable →
+  WIRED behind `agents.framework: crewai|direct` (default direct), crew
+  used ONLY for research summaries through the same validation/redaction
+  pipeline. `scripts/smoke_crew.py` for laptop verification.
+
+### Execution + memory + ops consent (B3)
+- Shell/read/list plans execute under per-category scopes; jail checked
+  at plan time. Non-allowlisted shell and overwriting writes pause for
+  laptop approval: `POST /ops/consent` + approve/deny under the existing
+  laptop-only gate (third consent scope, own TTLs).
+- Bounded memory store (`logs/memory.jsonl`, 500 entries, redacted
+  summaries only) fed back into planner context.
+
+### Phone voice (B4)
+- `POST /voice/transcribe` (near-gated, 5MB cap, 501 when STT missing,
+  audio never persisted). App: mic button → permission → record (30s,
+  live amplitude meter = the DESIGN.md `listening` state) → review, never
+  auto-send. RECORD_AUDIO + NSMicrophoneUsageDescription land with it.
+
+### Browser + automation scaffold (B5)
+- `browser_act` (goto/click/fill/read_text): SSRF guard + deny-by-default
+  domain allowlist + post-navigation re-check (redirects re-gated) +
+  self-enforced laptop consent + headless/sandboxed/JS-off/downloads-off
+  context. Focus check is foreground-window exact-match (substring
+  deliberately rejected as spoofable); keystroke injection stays an
+  honest stub by decision. Passed a dedicated adversarial review.
+
 ## Unreleased (KREW remediation)
 - **CI sync**: `cryptography==50.0.1` added to `requirements.txt` (was
   imported by tests + `gen_cert.py` but missing from the light CI set);
