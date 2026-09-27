@@ -24,12 +24,41 @@ def test_parse_ddg_html() -> None:
 
 
 def test_search_uses_mocked_http(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_post(url, data=None, headers=None, timeout=None):
-        assert "duckduckgo" in url
-        req = httpx.Request("POST", url)
-        return httpx.Response(200, text=_DDG_SAMPLE, request=req)
+    import socket as _socket
 
-    monkeypatch.setattr(httpx, "post", fake_post)
+    class _FakeStream:
+        """Minimal httpx.stream context manager over the DDG sample."""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        @property
+        def url(self):
+            return httpx.URL("https://html.duckduckgo.com/html/")
+
+        @property
+        def encoding(self):
+            return "utf-8"
+
+        def iter_bytes(self, chunk_size: int = 65536):
+            yield _DDG_SAMPLE.encode("utf-8")
+
+    def fake_stream(method, url, **kwargs):
+        assert "duckduckgo" in str(url)
+        assert kwargs.get("follow_redirects") is False
+        return _FakeStream()
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("40.114.177.156", 0))]
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
     hits = web_search.search("local LLMs", WebSearchConfig())
     assert isinstance(hits[0], SearchHit)
     assert hits[0].url == "https://example.com/llm"

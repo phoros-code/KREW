@@ -379,6 +379,8 @@ def test_issued_at_override_interplay() -> None:
 
 def test_searxng_success_path(monkeypatch) -> None:
     import httpx
+    import json as _json
+    import socket as _socket
 
     from buddy_core.config import WebSearchConfig
     from buddy_core.tools import web_search
@@ -393,18 +395,42 @@ def test_searxng_success_path(monkeypatch) -> None:
     seen: dict = {}
 
     class _Resp:
+        """Minimal httpx.stream double for the SearXNG JSON payload."""
+
+        def __init__(self, url: str):
+            self._url = url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
         def raise_for_status(self) -> None:
             pass
 
-        def json(self) -> dict:
-            return payload
+        @property
+        def url(self):
+            return httpx.URL(self._url)
 
-    def fake_get(url, params=None, headers=None, timeout=None):
-        seen["url"] = url
-        seen["params"] = params
-        return _Resp()
+        @property
+        def encoding(self):
+            return "utf-8"
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+        def iter_bytes(self, chunk_size: int = 65536):
+            yield _json.dumps(payload).encode("utf-8")
+
+    def fake_stream(method, url, **kwargs):
+        seen["url"] = str(url)
+        seen["params"] = kwargs.get("params")
+        assert kwargs.get("follow_redirects") is False
+        return _Resp(str(url))
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr("socket.getaddrinfo", fake_getaddrinfo)
     hits = web_search.search(
         "hello",
         WebSearchConfig(backend="searxng", searxng_url="https://searx.example/"),
