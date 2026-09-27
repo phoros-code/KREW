@@ -247,6 +247,49 @@ class AuthState:
     # are counted in-memory for debugging, never logged per attempt.
     _emitted_for_token: str | None = None
     absolute_expired_retries: int = 0
+    # Live-rotation (Track E1 BLOCKER-01): path + mtime for the running
+    # server to pick up `rotate_token.py` without a restart. create_app()
+    # sets both; verify/is_locked re-stat (os.stat only, no YAML parse
+    # when unchanged) and reload on change.
+    security_path: str | Path | None = None
+    _security_mtime_ns: int | None = None
+
+    def maybe_reload(self) -> None:
+        """Reload settings if security.yaml changed on disk (live rotation).
+
+        Cheap fast path: a single os.stat; no YAML parse when mtime_ns is
+        unchanged. On change, reloads via load_auth_settings (outside the
+        write lock — load may backfill+persist which takes the lock), then
+        swaps state.settings + clears in-memory lockout dicts under
+        _SECURITY_WRITE_LOCK (a rotation is an operator act — clearing
+        lockouts is correct). Corrupt-file RuntimeError propagates (fail
+        closed → 500 internal) and leaves in-memory state + mtime
+        untouched so the next request retries.
+        """
+        if self.security_path is None:
+            return
+        try:
+            mtime_ns = os.stat(self.security_path).st_mtime_ns
+        except OSError:
+            return
+        if self._security_mtime_ns is not None and mtime_ns == self._security_mtime_ns:
+            return
+        new_settings = load_auth_settings(self.security_path)
+        with _SECURITY_WRITE_LOCK:
+            try:
+                latest_ns = os.stat(self.security_path).st_mtime_ns
+            except OSError:
+                latest_ns = mtime_ns
+            self.settings = new_settings
+            if isinstance(self.failed_attempts, dict):
+                self.failed_attempts.clear()
+            else:  # pragma: no cover — legacy int shape
+                self.failed_attempts = {}  # type: ignore[assignment]
+            if isinstance(self.locked_until, dict):
+                self.locked_until.clear()
+            else:  # pragma: no cover — legacy shape
+                self.locked_until = {}  # type: ignore[assignment]
+            self._security_mtime_ns = latest_ns
 
     def effective_issued_at(self) -> datetime | None:
         if self.issued_at is not None:
@@ -259,6 +302,8 @@ class AuthState:
 
     def is_locked(self, client_ip: str | None = None) -> bool:
         """Per-IP lockout check. None (legacy call) = ANY IP locked."""
+        # Live-rotation check (cheap os.stat; no parse when unchanged).
+        self.maybe_reload()
         if client_ip is None:
             now = self.now()
             return any(
@@ -313,13 +358,20 @@ class AuthState:
         Lockout is per client IP: `client_ip` selects the failure bucket
         (None/"" → "unknown"). Success clears ONLY that IP's bucket; a wrong
         token increments ONLY that IP's counter.
+
+        Track E1 SHOULD-03 verify-first-then-lock: an exact token match is
+        checked BEFORE the lockout gate, so a correct token always clears
+        its IP bucket even when previously locked. Lockout is only
+        enforced/counted on verification failure.
         """
+        # Live-rotation check (cheap os.stat; single stat per verify — the
+        # inline lockout check below does NOT re-stat via is_locked()).
+        self.maybe_reload()
         key = self._ip_key(client_ip)
-        if self.is_locked(key):
-            return False, "locked_out"
-        # Absolute ceiling only applies to the real token — a wrong token takes
-        # the normal failure path with no event (avoids leaking expiry + log flood).
+        # Verify-first: exact match bypasses a stale lockout (SHOULD-03).
         if token and secrets.compare_digest(token, self.settings.token):
+            # Absolute ceiling only applies to the real token — a wrong token takes
+            # the normal failure path with no event (avoids leaking expiry + log flood).
             if self.is_absolute_expired():
                 if self._emitted_for_token != self.settings.token:
                     self._emitted_for_token = self.settings.token
@@ -333,6 +385,10 @@ class AuthState:
             self.locked_until.pop(key, None)
             self.last_activity = self.now()
             return True, "ok"
+        # Wrong/empty token: enforce lockout (inline, no second stat).
+        until = self.locked_until.get(key)
+        if until is not None and self.now() < until:
+            return False, "locked_out"
         if self.is_idle_expired():
             return False, "idle_expired"
         count = self.failed_attempts.get(key, 0) + 1
@@ -372,11 +428,18 @@ class AuthState:
             if path.exists():
                 try:
                     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-                except yaml.YAMLError:
-                    data = {}
+                except yaml.YAMLError as exc:
+                    raise RuntimeError(f"corrupt security config: {path}: {exc}") from exc
                 if not isinstance(data, dict):
                     data = {}
             data.setdefault("auth", {})["token"] = new_token
             data["auth"]["issued_at"] = self.settings.issued_at.isoformat()
             _atomic_write_yaml(path, data)
+            # Keep the writer's own mtime view fresh when it tracks this file.
+            if self.security_path is not None:
+                try:
+                    if Path(self.security_path) == path:
+                        self._security_mtime_ns = os.stat(path).st_mtime_ns
+                except OSError:
+                    pass
         return new_token
