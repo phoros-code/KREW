@@ -1,5 +1,20 @@
 # Changelog — Everyday Buddy
 
+## v0.2.1 (2026-09-27) — Security-review follow-ups (Track E)
+
+E1 review verdict was FAIL on rotation semantics; re-verification PASS after
+these fixes. No BLOCKERs remain; residual NOTEs ride.
+
+- **Rotation recovery**: an external token rotation resets the idle clock
+  (rotate-to-recover works after long idle) and clears lockouts. A
+  same-token config touch preserves both — a threshold edit no longer
+  amnesties an attacker's lockout. Mid-load second writes converge via a
+  bounded re-read (worst case: one request of staleness).
+- **Search backends pinned**: SearXNG and DuckDuckGo calls go through the
+  same DNS-pinned, manually-redirected transport as page fetches; a
+  loopback SearXNG URL fails closed; redirected POSTs continue as bodyless
+  GET (request bodies are never forwarded to a new host).
+
 ## v0.2.0 (2026-09-27) — Hardening (Track A)
 
 All 13 audit CRITICALs fixed; no new capabilities. Upgrade note: consent

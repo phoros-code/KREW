@@ -133,3 +133,9 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - A5 (9 commits): all 7 mobile CRITICALs + 12 fixes; permission_handler added. 115 dart.
 - A6 (3 commits + CI): 47 backend gap tests, 68 mobile gap tests + integration shell, CI concurrency + coverage artifact. 296 pytest + 183 dart.
 - Tag: v0.2.0. Next per plan: Track C (UI/UX), Track D (platform), Track E (verification incl. hardware §3–§5), then Track B (capabilities → v0.3.0).
+
+## Session notes (2026-09-27, Track E review → v0.2.1)
+
+- E1 Security Architect review: FAIL on 1 BLOCKER (rotation didn't touch the running server) + 7 SHOULDs. Fixed all: live mtime reload, verify-first lockout, closed approval bypass, corrupt-write aborts, DNS pinning + manual redirects, task_started bound.
+- Re-verification: PASS, but raised 4 follow-ups — fixed directly in build mode: (1) idle reset only on token-change reload (config touches preserve lockouts/idle), (2) bounded mid-load re-read, (3) search backends (SearXNG/DDG) through the pinned transport with bodyless redirect GETs. 313 pytest + 260 dart.
+- Tag: v0.2.1. Remaining: hardware gates §3–§5 (human, physical devices), then Track B (capabilities → v0.3.0).
