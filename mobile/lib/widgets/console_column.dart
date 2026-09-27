@@ -15,6 +15,7 @@ class ConsoleColumn extends StatelessWidget {
     required this.child,
     this.bottomBar,
     this.onRefresh,
+    this.controller,
   });
 
   final Widget child;
@@ -26,6 +27,13 @@ class ConsoleColumn extends StatelessWidget {
   /// (reconnect stream + refetch proximity config).
   final Future<void> Function()? onRefresh;
 
+  /// Track C4: shared scroll controller seam. Passed to the
+  /// [SingleChildScrollView] so virtualized screens (chat log, task detail)
+  /// and plain columns share one controller pattern — follow/jump-to-newest
+  /// listens on the same object the scroll view drives. Null keeps the
+  /// previous behavior (an internal anonymous controller).
+  final ScrollController? controller;
+
   @override
   Widget build(BuildContext context) {
     final bool dark = Theme.of(context).brightness == Brightness.dark;
@@ -35,6 +43,7 @@ class ConsoleColumn extends StatelessWidget {
 
     final Future<void> Function()? refresh = onRefresh;
     final Widget scroll = SingleChildScrollView(
+      controller: controller,
       physics: refresh == null
           ? null
           : const AlwaysScrollableScrollPhysics(),
