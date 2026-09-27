@@ -115,6 +115,12 @@ def execute_plan(
     transcript: list[dict[str, Any]] = []
     steps_taken = 0
     for step in plan.steps:
+        if step.tool == "delegate":
+            # Track B1: delegate is schema-ready (planner allows it, depth
+            # caps apply) but execution-gated until B3.
+            msg = "Plan rejected: delegation lands in B3 — delegate steps are schema-ready but execution-gated"
+            transcript.append({"tool": step.tool, "ok": False, "error": msg})
+            return ExecutorResult(ok=False, output=msg, steps_taken=steps_taken, transcript=transcript)
         if step.tool not in EXECUTOR_TOOLS:
             msg = f"Tool {step.tool!r} is outside executor scope — stopping"
             transcript.append({"tool": step.tool, "ok": False, "error": msg})

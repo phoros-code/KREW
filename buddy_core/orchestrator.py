@@ -4,10 +4,12 @@
 ``voice_loop.py`` and ``server/main.py`` both call this, never agents
 directly (ARCHITECTURE.md).
 
-Phase 0: a single ResearchAgent flow (search → fetch → summarize) backed by
-Ollama, driven by the typed plan from ``agents/planner.py``. CrewAI wiring
-lands once the Python 3.12 environment is ready (crewai's pinned langchain
-requires numpy<2, which has no Python 3.14 wheel) — the typed-plan boundary
+Track B1: the LLM planner (``planner.build_llm_plan``) is primary for
+free-form commands; the deterministic builders (launch/list/code/research)
+are the fail-closed fallback. Research execution lives in
+``agents/researcher.py`` (``run_research``) — this file only owns routing,
+event emission (with ``planner``: "llm"|"fallback" on completion events),
+and model routing. CrewAI wiring lands later — the typed-plan boundary
 here is exactly what CrewAI tasks will consume, so nothing above this file
 changes when that swap happens.
 """
@@ -25,12 +27,13 @@ from buddy_core.agents.planner import (
     build_code_plan,
     build_launch_plan,
     build_list_apps_plan,
+    build_llm_plan,
     build_research_plan,
     validate_plan,
     resolve_launch_intent,
 )
 from buddy_core.agents.coder import resolve_code_target as coder_resolve_target
-from buddy_core.agents.executor import redact_event_args
+from buddy_core.agents.executor import EXECUTOR_TOOLS, redact_event_args
 from buddy_core.config import load_apps_config, load_models_config, load_tools_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -148,6 +151,7 @@ def _run_launch(
     apps_cfg,
     tools_cfg,
     limits,
+    planner: str = "fallback",
 ) -> TaskResult:
     """Execute a launch_app plan: build -> validate -> execute the single step.
 
@@ -155,7 +159,8 @@ def _run_launch(
     that reaches the tool — an oversized plan or unknown tool is rejected by
     validate_plan (raising PlanRejected to run()'s handler) before anything
     launches. Emitted event shapes are unchanged: tool_call(launch_app)
-    then task_completed/task_failed, same payloads as before.
+    then task_completed/task_failed, same payloads as before (plus
+    Track B1 ``planner`` on the completion events).
     """
     from buddy_core.tools import launch_app
 
@@ -169,12 +174,12 @@ def _run_launch(
     try:
         result = launch_app.launch(step_args["app_key"], apps_cfg, tools_cfg)
     except launch_app.AppNotFound as exc:
-        _log_event("task_failed", {"task_id": task_id, "error": str(exc)})
+        _log_event("task_failed", {"task_id": task_id, "error": str(exc), "planner": planner})
         return TaskResult(ok=False, output=str(exc), task_id=task_id, steps_taken=1)
     if not result.ok:
-        _log_event("task_failed", {"task_id": task_id, "error": result.message})
+        _log_event("task_failed", {"task_id": task_id, "error": result.message, "planner": planner})
         return TaskResult(ok=False, output=result.message, task_id=task_id, steps_taken=1)
-    _log_event("task_completed", {"task_id": task_id, "result": result.message})
+    _log_event("task_completed", {"task_id": task_id, "result": result.message, "planner": planner})
     entry = apps_cfg.apps[app_key]
     return TaskResult(ok=True, output=f"Launched {entry.display}.", task_id=task_id, steps_taken=1)
 
@@ -194,11 +199,12 @@ def _is_launch_verb(command: str) -> bool:
     return any(text == v for v in LAUNCH_VERBS)
 
 
-def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits) -> TaskResult:
+def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits, planner: str = "fallback") -> TaskResult:
     """Execute a list_apps plan: build -> validate -> execute the single step.
 
     Track A4: same typed-plan discipline as _run_launch — the validated plan
-    is the only thing that reaches the tool. Event shapes unchanged.
+    is the only thing that reaches the tool. Event shapes unchanged (plus
+    Track B1 ``planner`` on the completion event).
     """
     from buddy_core.tools import launch_app
 
@@ -207,11 +213,13 @@ def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits) -> TaskResult:
     _log_event("tool_call", {"task_id": task_id, "tool": "list_apps", "args": redact_event_args("list_apps", plan.steps[0].args)})
     entries = launch_app.list_apps(apps_cfg)
     out = "\n".join(entries) if entries else "No apps are registered in config/apps.yaml."
-    _log_event("task_completed", {"task_id": task_id, "result": out[:2000]})
+    _log_event("task_completed", {"task_id": task_id, "result": out[:2000], "planner": planner})
     return TaskResult(ok=True, output=out, task_id=task_id, steps_taken=1)
 
 
-def _run_code(task_id: str, command: str, rel_path: str, models, tools_cfg, source: str) -> TaskResult:
+def _run_code(
+    task_id: str, command: str, rel_path: str, models, tools_cfg, source: str, planner: str = "fallback"
+) -> TaskResult:
     """Coder flow: LLM drafts content → validated write_file plan → executor runs it."""
     import ollama
 
@@ -225,14 +233,107 @@ def _run_code(task_id: str, command: str, rel_path: str, models, tools_cfg, sour
         plan = build_code_plan(rel_path, content, tools_cfg.agent_limits)
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
-        _log_event("task_failed", {"task_id": task_id, "error": err})
+        _log_event("task_failed", {"task_id": task_id, "error": err, "planner": planner})
         return TaskResult(ok=False, output=err, task_id=task_id)
     result = execute_plan(plan, tools_cfg, task_id, _log_event)
     if result.ok:
-        _log_event("task_completed", {"task_id": task_id, "result": result.output[:2000]})
+        _log_event("task_completed", {"task_id": task_id, "result": result.output[:2000], "planner": planner})
         return TaskResult(ok=True, output=f"Saved {rel_path} in the workspace.", task_id=task_id, steps_taken=result.steps_taken + 1)
-    _log_event("task_failed", {"task_id": task_id, "error": result.output})
+    _log_event("task_failed", {"task_id": task_id, "error": result.output, "planner": planner})
     return TaskResult(ok=False, output=result.output, task_id=task_id, steps_taken=result.steps_taken)
+
+
+def _ollama_unreachable_message(models, exc: Exception) -> str:
+    err = f"{type(exc).__name__}: {exc}"
+    if "ConnectError" in type(exc).__name__ or "Connection" in err:
+        return f"Cannot reach Ollama at {models.host}. Is `ollama serve` running? ({exc})"
+    return err
+
+
+def _run_research(
+    task_id: str,
+    command: str,
+    models,
+    tools_cfg,
+    max_results: int,
+    max_pages: int,
+    max_chars: int,
+    source: str,
+    planner: str,
+) -> TaskResult:
+    """Research flow via ResearchAgent (Track B1).
+
+    Delegates search/fetch/summarize to ``researcher.run_research`` with
+    injectable wrappers that emit the SAME redacted ``tool_call`` events
+    as the old inlined flow (web_search with query+max_results, fetch_page
+    with url). Completion events carry ``planner`` ("llm"|"fallback").
+    """
+    import ollama
+
+    from buddy_core.agents import researcher
+    from buddy_core.tools import web_search
+
+    steps_taken = 0
+    try:
+        client = ollama.Client(host=models.host, timeout=OLLAMA_TIMEOUT_SECONDS)
+        model = _pick_model(client, models, source=source)
+
+        def search_fn(query: str, limit: int):
+            nonlocal steps_taken
+            _log_event(
+                "tool_call",
+                {
+                    "task_id": task_id,
+                    "tool": "web_search",
+                    "args": redact_event_args("web_search", {"query": query, "max_results": limit}),
+                },
+            )
+            hits = web_search.search(query, tools_cfg.web_search, max_results=limit)
+            steps_taken += 1
+            return hits
+
+        def fetch_fn(url: str, limit: int):
+            nonlocal steps_taken
+            _log_event(
+                "tool_call",
+                {"task_id": task_id, "tool": "fetch_page", "args": redact_event_args("fetch_page", {"url": url})},
+            )
+            try:
+                body = web_search.fetch_page_text(url, max_chars=int(limit))
+            except Exception as exc:
+                body = f"(fetch failed: {exc})"
+            steps_taken += 1
+            return body
+
+        def llm_summarize(query: str, context: str):
+            nonlocal steps_taken
+            out = _summarize_with_llm(client, model, query, context)
+            steps_taken += 1
+            return out
+
+        limits = {"max_results": max_results, "max_pages": max_pages, "max_chars": max_chars}
+        output = researcher.run_research(command, limits, search_fn, fetch_fn, llm_summarize)
+        _log_event("task_completed", {"task_id": task_id, "result": output[:2000], "planner": planner})
+        return TaskResult(ok=True, output=output, task_id=task_id, steps_taken=steps_taken)
+    except Exception as exc:
+        err = _ollama_unreachable_message(models, exc)
+        _log_event("task_failed", {"task_id": task_id, "error": err, "planner": planner})
+        return TaskResult(ok=False, output=err, task_id=task_id, steps_taken=steps_taken)
+
+
+def _research_limits_from_plan(plan) -> tuple[int, int, int]:
+    """Extract (max_results, max_pages, max_chars) from a research plan."""
+    max_results, max_pages, max_chars = 5, 2, 8000
+    try:
+        for step in plan.steps:
+            if step.tool == "web_search":
+                max_results = int(step.args.get("max_results", max_results))
+            elif step.tool == "fetch_page":
+                max_pages = int(step.args.get("max_pages", max_pages))
+                max_chars = int(step.args.get("max_chars", max_chars))
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return max_results, max_pages, max_chars
 
 
 def run(command: str, task_id: str | None = None, source: str = "text") -> TaskResult:
@@ -245,6 +346,12 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
     the try block, so a corrupt config or a failed log write still emits
     task_failed instead of raising. Empty commands emit task_failed (with
     the text echoed truncated) instead of returning silently.
+
+    Track B1 — LLM planner is primary for free-form commands; any
+    LLM/parse/validation failure falls back to the deterministic builders
+    (launch/list/code/research). Completion events carry
+    ``planner``: "llm"|"fallback". ``source`` still selects the model for
+    summarization (and code drafting) via _pick_model.
     """
     task_id = task_id or uuid.uuid4().hex[:12]
     try:
@@ -255,7 +362,7 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
         try:
             _log_event(
                 "task_failed",
-                {"task_id": task_id, "error": "Empty command.", "text": command[:200]},
+                {"task_id": task_id, "error": "Empty command.", "text": command[:200], "planner": "fallback"},
             )
         except Exception:
             pass
@@ -268,76 +375,72 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
         apps_cfg = load_apps_config()
         limits = tools_cfg.agent_limits
 
+        # Track B1 — try the LLM planner FIRST (silent on any failure).
+        llm_plan = None
+        try:
+            candidate = build_llm_plan(command, tools_cfg, models)
+            # Re-enforce caps at the orchestration boundary (truncate+reject:
+            # overlong or over-deep plans are rejected here, never executed).
+            validate_plan(candidate, limits)
+            llm_plan = candidate
+        except Exception:
+            llm_plan = None
+
+        if llm_plan is not None and llm_plan.steps:
+            if any(s.tool == "delegate" for s in llm_plan.steps):
+                err = "Plan rejected: delegation lands in B3 — delegate steps are schema-ready but execution-gated"
+                _log_event("task_failed", {"task_id": task_id, "error": err, "planner": "llm"})
+                return TaskResult(ok=False, output=err, task_id=task_id)
+            tools_in_plan = {s.tool for s in llm_plan.steps}
+            if tools_in_plan and tools_in_plan <= {"web_search", "fetch_page"}:
+                mr, mp, mc = _research_limits_from_plan(llm_plan)
+                return _run_research(task_id, command, models, tools_cfg, mr, mp, mc, source, "llm")
+            if tools_in_plan and tools_in_plan <= EXECUTOR_TOOLS:
+                from buddy_core.agents.executor import execute_plan
+
+                result = execute_plan(llm_plan, tools_cfg, task_id, _log_event)
+                if result.ok:
+                    _log_event(
+                        "task_completed",
+                        {"task_id": task_id, "result": result.output[:2000], "planner": "llm"},
+                    )
+                    return TaskResult(ok=True, output=result.output, task_id=task_id, steps_taken=result.steps_taken)
+                _log_event("task_failed", {"task_id": task_id, "error": result.output, "planner": "llm"})
+                return TaskResult(ok=False, output=result.output, task_id=task_id, steps_taken=result.steps_taken)
+            if len(llm_plan.steps) == 1 and llm_plan.steps[0].tool == "launch_app":
+                key = llm_plan.steps[0].args.get("app_key")
+                if isinstance(key, str) and key in apps_cfg.apps:
+                    return _run_launch(task_id, key, apps_cfg, tools_cfg, limits, planner="llm")
+                # Unknown app_key from the LLM: fall through to the
+                # deterministic unknown-app handling below (fail closed).
+            elif len(llm_plan.steps) == 1 and llm_plan.steps[0].tool == "list_apps":
+                return _run_list_apps(task_id, apps_cfg, tools_cfg, limits, planner="llm")
+            # Mixed or otherwise unhandled LLM plans: fall through to the
+            # deterministic fallback (B3 wires general execution).
+
         app_key = resolve_launch_intent(command, apps_cfg)
         if app_key:
-            return _run_launch(task_id, app_key, apps_cfg, tools_cfg, limits)
+            return _run_launch(task_id, app_key, apps_cfg, tools_cfg, limits, planner="fallback")
         if _is_launch_verb(command):
             known = ", ".join(sorted(apps_cfg.apps)) or "(none registered)"
-            _log_event("task_failed", {"task_id": task_id, "error": "Unknown app"})
+            _log_event("task_failed", {"task_id": task_id, "error": "Unknown app", "planner": "fallback"})
             return TaskResult(
                 ok=False,
                 output=f"Unknown app. Registered: {known}. Say 'list apps' for a full list.",
                 task_id=task_id,
             )
         if _is_list_apps(command):
-            return _run_list_apps(task_id, apps_cfg, tools_cfg, limits)
+            return _run_list_apps(task_id, apps_cfg, tools_cfg, limits, planner="fallback")
         code_target = coder_resolve_target(command)
         if code_target:
-            return _run_code(task_id, command, code_target, models, tools_cfg, source)
+            return _run_code(task_id, command, code_target, models, tools_cfg, source, planner="fallback")
         plan = build_research_plan(command, limits)
         validate_plan(plan, limits)
+        mr, mp, mc = _research_limits_from_plan(plan)
+        return _run_research(task_id, command, models, tools_cfg, mr, mp, mc, source, "fallback")
     except Exception as exc:
         try:
-            _log_event("task_failed", {"task_id": task_id, "error": str(exc)})
+            _log_event("task_failed", {"task_id": task_id, "error": str(exc), "planner": "fallback"})
         except Exception:
             pass
         return TaskResult(ok=False, output=f"Plan rejected: {exc}", task_id=task_id)
-
-    steps_taken = 0
-    try:
-        import ollama
-
-        from buddy_core.tools import web_search
-
-        client = ollama.Client(host=models.host, timeout=OLLAMA_TIMEOUT_SECONDS)
-        model = _pick_model(client, models, source=source)
-
-        # Step 1 — typed web_search call (no raw LLM text involved).
-        step = plan.steps[0]
-        _log_event(
-            "tool_call",
-            {"task_id": task_id, "tool": "web_search", "args": redact_event_args("web_search", step.args)},
-        )
-        hits = web_search.search(step.args["query"], tools_cfg.web_search, max_results=step.args.get("max_results", 5))
-        steps_taken += 1
-        if not hits:
-            out = "No search results found."
-            _log_event("task_completed", {"task_id": task_id, "result": out})
-            return TaskResult(ok=True, output=out, task_id=task_id, steps_taken=steps_taken)
-
-        # Step 2 — fetch top pages as inert data.
-        fetch_args = plan.steps[1].args
-        context_parts: list[str] = []
-        for hit in hits[: int(fetch_args.get("max_pages", 2))]:
-            _log_event(
-                "tool_call",
-                {"task_id": task_id, "tool": "fetch_page", "args": redact_event_args("fetch_page", {"url": hit.url})},
-            )
-            try:
-                body = web_search.fetch_page_text(hit.url, max_chars=int(fetch_args.get("max_chars", 8000)))
-            except Exception as exc:
-                body = f"(fetch failed: {exc})"
-            context_parts.append(f"SOURCE: {hit.title} — {hit.url}\n{hit.snippet}\n{body}")
-            steps_taken += 1
-
-        # Step 3 — local summarization.
-        output = _summarize_with_llm(client, model, command, "\n\n---\n\n".join(context_parts))
-        steps_taken += 1
-        _log_event("task_completed", {"task_id": task_id, "result": output[:2000]})
-        return TaskResult(ok=True, output=output, task_id=task_id, steps_taken=steps_taken)
-    except Exception as exc:
-        err = f"{type(exc).__name__}: {exc}"
-        if "ConnectError" in type(exc).__name__ or "Connection" in err:
-            err = f"Cannot reach Ollama at {models.host}. Is `ollama serve` running? ({exc})"
-        _log_event("task_failed", {"task_id": task_id, "error": err})
-        return TaskResult(ok=False, output=err, task_id=task_id, steps_taken=steps_taken)
