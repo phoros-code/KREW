@@ -12,10 +12,12 @@ and reserved ranges are rejected) and the response body is streamed with a
 
 from __future__ import annotations
 
+import contextlib
 import html as _html
 import ipaddress
 import re
 import socket
+import threading
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -32,6 +34,12 @@ _TIMEOUT = 20.0
 # whole — a hostile page must not fill laptop memory.
 MAX_FETCH_BYTES = 1024 * 1024  # 1MB
 TRUNCATED_MARKER = "[truncated: response exceeded 1MB fetch ceiling]"
+
+# Manual redirect bound (Track E1 SHOULD-04/05): at most this many HTTP
+# hops (initial + redirects) are followed. Every hop is re-resolved,
+# re-validated, and DNS-pinned; exceeding the bound fails closed.
+MAX_REDIRECT_HOPS = 5
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
 
 @dataclass
@@ -92,27 +100,20 @@ def search(query: str, config: WebSearchConfig, max_results: int = 5) -> list[Se
     return parse_ddg_html(resp.text)[:max_results]
 
 
-def _assert_url_safe(url: str) -> None:
-    """Fail-closed SSRF guard for agent-fetched URLs. Raises ValueError.
+def _default_port(scheme: str) -> int:
+    return 443 if scheme == "https" else 80
 
-    Only http/https schemes are allowed. The hostname is resolved with
-    ``socket.getaddrinfo`` and EVERY returned address is checked with the
-    ``ipaddress`` module — private (RFC1918), loopback, link-local
-    (incl. the 169.254.169.254 metadata address), multicast, reserved,
-    and unspecified targets are all rejected. Unresolvable hosts fail
-    closed too (a DNS failure must never become a bypass).
+
+def _resolve_public_addrs(host: str, port: int | str | None) -> list:
+    """Resolve + validate once. Returns the pinned getaddrinfo list.
+
+    EVERY returned address must be public (same checks as the SSRF guard) —
+    otherwise ValueError (fail closed). Callers pin the returned list for
+    the subsequent connect so a rebinding DNS answer cannot swap in a
+    private address between check and use.
     """
     try:
-        parts = urlsplit(url)
-    except ValueError as exc:
-        raise ValueError(f"Blocked URL {url!r}: unparseable ({exc})") from None
-    if parts.scheme not in ("http", "https"):
-        raise ValueError(f"Blocked URL scheme {parts.scheme!r} — only http/https allowed")
-    host = parts.hostname or ""
-    if not host:
-        raise ValueError(f"Blocked URL {url!r}: no hostname")
-    try:
-        addr_infos = socket.getaddrinfo(host, None)
+        addr_infos = socket.getaddrinfo(host, port)
     except OSError as exc:
         raise ValueError(f"Blocked host {host!r}: cannot resolve ({exc})") from None
     if not addr_infos:
@@ -132,41 +133,145 @@ def _assert_url_safe(url: str) -> None:
             or ip.is_unspecified
         ):
             raise ValueError(f"Blocked host {host!r}: resolves to non-public address {raw_ip}")
+    return list(addr_infos)
+
+
+@contextlib.contextmanager
+def _pinned_getaddrinfo(host: str, pinned: list):
+    """Pin one hostname to its validated address list for the enclosed hop.
+
+    Thread-local: only the entering thread sees the pin (checked via
+    threading.get_ident()); every other thread passes through to the real
+    function. Exact-host match (``h == host``) returns the pinned sockaddr
+    list; everything else passes through to the real getaddrinfo captured
+    at entry (which honours test monkeypatches).
+    """
+    real = socket.getaddrinfo
+    tid = threading.get_ident()
+
+    def _shim(h, p, *args, **kwargs):
+        if threading.get_ident() == tid and h == host:
+            return pinned
+        return real(h, p, *args, **kwargs)
+
+    socket.getaddrinfo = _shim  # type: ignore[assignment]
+    try:
+        yield pinned
+    finally:
+        try:
+            socket.getaddrinfo = real  # type: ignore[assignment]
+        except Exception:
+            pass
+
+
+def _assert_url_safe(url: str) -> None:
+    """Fail-closed SSRF guard for agent-fetched URLs. Raises ValueError.
+
+    Only http/https schemes are allowed. The hostname is resolved with
+    ``socket.getaddrinfo`` and EVERY returned address is checked with the
+    ``ipaddress`` module — private (RFC1918), loopback, link-local
+    (incl. the 169.254.169.254 metadata address), multicast, reserved,
+    and unspecified targets are all rejected. Unresolvable hosts fail
+    closed too (a DNS failure must never become a bypass).
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise ValueError(f"Blocked URL {url!r}: unparseable ({exc})") from None
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked URL scheme {parts.scheme!r} — only http/https allowed")
+    host = parts.hostname or ""
+    if not host:
+        raise ValueError(f"Blocked URL {url!r}: no hostname")
+    port = parts.port or _default_port(parts.scheme)
+    _resolve_public_addrs(host, port)
+
+
+def _redirect_location(resp) -> str | None:
+    try:
+        headers = getattr(resp, "headers", None) or {}
+        get = getattr(headers, "get", None)
+        if callable(get):
+            for key in ("location", "Location", "LOCATION"):
+                try:
+                    val = get(key)
+                except Exception:
+                    val = None
+                if val:
+                    return str(val)
+        return None
+    except Exception:
+        return None
 
 
 def fetch_page_text(url: str, max_chars: int = 8000) -> str:
     """Fetch a page and return visible text as PLAIN DATA (never instructions).
 
-    The URL passes the SSRF guard first (redirect targets are re-checked —
-    a 302 to an internal host fails closed), then the body is streamed with
-    ``iter_bytes`` under the 1MB hard ceiling: over-long bodies are cut off
-    and the returned text is flagged with TRUNCATED_MARKER. Bodies under the
-    ceiling behave exactly as before (same decode/clean/max_chars pipeline).
+    Track E1 SHOULD-04/05 DNS-pinned fetch: resolve+validate once per hop,
+    pin that hop's addresses via a thread-local getaddrinfo shim, and follow
+    redirects manually (follow_redirects=False, max 5 hops — every hop
+    re-resolved+validated+pinned, fail closed on violation or hop-limit).
+    The body is streamed with ``iter_bytes`` under the 1MB hard ceiling:
+    over-long bodies are cut off and flagged with TRUNCATED_MARKER. Bodies
+    under the ceiling behave exactly as before (same decode/clean/max_chars
+    pipeline). The final URL is re-checked after the transfer.
     """
-    _assert_url_safe(url)
-    with httpx.stream("GET", url, headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=True) as resp:
-        resp.raise_for_status()
-        _assert_url_safe(str(resp.url))
-        chunks: list[bytes] = []
-        total = 0
-        truncated = False
-        for chunk in resp.iter_bytes(65536):
-            if not chunk:
-                continue
-            if total + len(chunk) > MAX_FETCH_BYTES:
-                chunks.append(chunk[: MAX_FETCH_BYTES - total])
-                total = MAX_FETCH_BYTES
-                truncated = True
-                break
-            chunks.append(chunk)
-            total += len(chunk)
+    from urllib.parse import urljoin
+
+    current_url = url
+    for hop in range(MAX_REDIRECT_HOPS):
         try:
-            page = b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
-        except (LookupError, ValueError):
-            page = b"".join(chunks).decode("utf-8", errors="replace")
-    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.DOTALL | re.IGNORECASE)
-    text = _clean(re.sub(r"<[^>]+>", " ", text))
-    text = text[:max_chars]
-    if truncated:
-        text += f"\n\n{TRUNCATED_MARKER}"
-    return text
+            parts = urlsplit(current_url)
+        except ValueError as exc:
+            raise ValueError(f"Blocked URL {current_url!r}: unparseable ({exc})") from None
+        if parts.scheme not in ("http", "https"):
+            raise ValueError(f"Blocked URL scheme {parts.scheme!r} — only http/https allowed")
+        host = parts.hostname or ""
+        if not host:
+            raise ValueError(f"Blocked URL {current_url!r}: no hostname")
+        port = parts.port or _default_port(parts.scheme)
+        pinned = _resolve_public_addrs(host, port)
+        with _pinned_getaddrinfo(host, pinned):
+            with httpx.stream(
+                "GET", current_url, headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=False
+            ) as resp:
+                # Final-URL check (covers transports that report a different
+                # URL than requested — e.g. a redirect simulated without a
+                # Location header). Inside the pin so the check itself cannot
+                # be rebound.
+                _assert_url_safe(str(getattr(resp, "url", current_url)))
+                status = getattr(resp, "status_code", 200)
+                location = _redirect_location(resp)
+                if status in _REDIRECT_STATUSES and location:
+                    if hop >= MAX_REDIRECT_HOPS - 1:
+                        raise ValueError(
+                            f"Blocked: too many redirects (exceeded {MAX_REDIRECT_HOPS} hops)"
+                        )
+                    current_url = urljoin(current_url, location)
+                    continue
+                resp.raise_for_status()
+                _assert_url_safe(str(getattr(resp, "url", current_url)))
+                chunks: list[bytes] = []
+                total = 0
+                truncated = False
+                for chunk in resp.iter_bytes(65536):
+                    if not chunk:
+                        continue
+                    if total + len(chunk) > MAX_FETCH_BYTES:
+                        chunks.append(chunk[: MAX_FETCH_BYTES - total])
+                        total = MAX_FETCH_BYTES
+                        truncated = True
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                try:
+                    page = b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
+                except (LookupError, ValueError):
+                    page = b"".join(chunks).decode("utf-8", errors="replace")
+        text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.DOTALL | re.IGNORECASE)
+        text = _clean(re.sub(r"<[^>]+>", " ", text))
+        text = text[:max_chars]
+        if truncated:
+            text += f"\n\n{TRUNCATED_MARKER}"
+        return text
+    raise ValueError(f"Blocked: too many redirects (exceeded {MAX_REDIRECT_HOPS} hops)")

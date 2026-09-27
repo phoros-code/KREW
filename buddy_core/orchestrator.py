@@ -261,7 +261,7 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
             pass
         return TaskResult(ok=False, output="Empty command.", task_id=task_id)
     try:
-        _log_event("task_started", {"task_id": task_id, "text": command, "source": source})
+        _log_event("task_started", {"task_id": task_id, "text": command[:200], "source": source})
 
         models = load_models_config()
         tools_cfg = load_tools_config()
