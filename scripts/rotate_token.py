@@ -6,7 +6,10 @@ Usage:
 Generates a fresh token, persists it via server.auth helpers (atomic write,
 0600, shared write lock), and prints it ONCE — the operator types/scans it
 into the phone, which stores it in secure storage. The old token stops
-working immediately. See SECURITY.md → Incident response.
+working immediately. Track E1 BLOCKER-01: rotation takes effect on the live
+server within one request (no restart) — the running server re-stats
+security.yaml on every auth check and reloads on mtime change, clearing
+in-memory lockouts. See SECURITY.md → Incident response.
 """
 
 from __future__ import annotations

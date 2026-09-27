@@ -78,7 +78,7 @@ Explicit, un-skippable prompts before:
 - **No secrets in source control.** `config/security.yaml` (tokens, cert paths) is gitignored; ship a `security.yaml.example` instead.
 - **Inference, agents, data, and telemetry stay local.** No telemetry, no analytics calls, no crash reporting that phones home by default — if you ever add any, it must be opt-in and disclosed in `README.md`. FCM background push is not implemented in v0.1.0; if ever added it would be the one exception — see Known limitations.
 - **Screen/webcam frames are not persisted** beyond what's needed to stream them live — don't accidentally build a rolling video archive of your own screen.
-- **Event logs (`logs/events.jsonl`)** should log what the agent did, not raw sensitive payloads — avoid dumping full file contents or screen frames into the log.
+- **Event logs (`logs/events.jsonl`)** should log what the agent did, not raw sensitive payloads — avoid dumping full file contents or screen frames into the log. `task_started` command text is truncated to 200 chars (same bound as the empty-command path) to bound log growth and sensitive-payload retention.
 
 ## Dependency hygiene
 
@@ -102,4 +102,4 @@ Explicit, un-skippable prompts before:
 
 ## Incident response (the short version)
 
-If you suspect a token leak or unauthorized access: rotate the token immediately from the laptop with `python scripts/rotate_token.py` (laptop-only CLI — regenerates the token via `server.auth` helpers, persists it atomically, and prints it once for re-pairing; the old token stops working immediately), check `logs/events.jsonl` for anything you didn't initiate, and if the laptop itself might be compromised, treat this as a full-system incident, not an Everyday Buddy–specific one.
+If you suspect a token leak or unauthorized access: rotate the token immediately from the laptop with `python scripts/rotate_token.py` (laptop-only CLI — regenerates the token via `server.auth` helpers, persists it atomically, and prints it once for re-pairing; the old token stops working immediately). Track E1 BLOCKER-01: rotation takes effect on the live server within one request (no restart) — the running server re-stats `security.yaml` on every auth check and reloads on mtime change, clearing in-memory lockouts. Check `logs/events.jsonl` for anything you didn't initiate, and if the laptop itself might be compromised, treat this as a full-system incident, not an Everyday Buddy–specific one.
