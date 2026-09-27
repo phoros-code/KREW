@@ -8,6 +8,9 @@ anyio==4.15.1
 certifi==2026.7.22
 click==8.5.0
 colorama==0.4.6
+# Verified 50.0.1 in venv312 (3.12 = CI interpreter); gen_cert.py + tests
+# import it, so the light CI set must include it (was missing → CI crash).
+cryptography==50.0.1
 fastapi==0.141.1
 h11==0.16.0
 httpcore==1.0.9
@@ -33,7 +36,6 @@ pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dotenv==1.2.3
 PyYAML==6.0.3
-sse-starlette==3.4.11
 starlette==1.6.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0

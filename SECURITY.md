@@ -85,6 +85,18 @@ Explicit, un-skippable prompts before:
 - Pin versions in `requirements.txt` / `pubspec.yaml` — don't float on `latest` for anything with shell/file access.
 - Run `pip-audit` (Python) and equivalent tooling for the Flutter side periodically, especially before a release.
 - Review dependency updates to `buddy_core/tools/` and `server/auth.py` more carefully than anywhere else in the repo — these are the modules where a supply-chain issue has the most impact.
+- **Known-accepted: 4 chromadb CVEs (PYSEC-2026-311, PYSEC-2026-3813/3814/3815).**
+  `chromadb==1.1.1` arrives transitively via `crewai==1.15.22`, which pins
+  `chromadb~=1.1.0` — the newest crewai still pins that range, and OSV
+  lists no fixed chromadb version, so no compatible bump exists.
+  Accepted because: (1) crewai is declared but **not imported by any
+  production code** (Track B2 decision pending — wiring or removal);
+  (2) no chromadb server ever runs — the vulnerable `/api/v2` endpoints
+  are never served; (3) nothing in the phone-reachable surface touches
+  chromadb; (4) CI's light set excludes crewai/chromadb entirely, so the
+  CI audit is unaffected. Revisit when wiring CrewAI (Track B2): either
+  a fixed chromadb exists by then, or the CrewAI integration must sandbox
+  or drop the chromadb dependency.
 
 ## Physical device security
 
