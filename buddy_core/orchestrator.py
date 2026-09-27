@@ -19,6 +19,14 @@ validation, redaction, and events are unchanged. Every other route
 (launch/list/code/executor) and the default (framework=direct) stay on
 direct Ollama calls — the typed-plan boundary here is unchanged, so
 nothing above this file changes either way.
+
+Track B3: LLM plans of pure shell/read/list/write steps EXECUTE via
+``execute_plan`` (destructive steps pause for laptop consent through the
+ops queue); genuinely mixed/unknown shapes still fall back to the
+deterministic builders. The orchestrator remembers redacted task
+summaries (``buddy_core/memory``) and injects the last few into the LLM
+planner prompt as bounded DATA context. ``planner`` attribution
+("llm"|"fallback") is preserved on all completion events.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from buddy_core.agents.planner import (
 from buddy_core.agents.coder import resolve_code_target as coder_resolve_target
 from buddy_core.agents.executor import EXECUTOR_TOOLS, redact_event_args
 from buddy_core.config import load_apps_config, load_models_config, load_tools_config
+from buddy_core.memory.memory import MEMORY_RECALL_DEFAULT
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVENT_LOG = REPO_ROOT / "logs" / "events.jsonl"
@@ -84,6 +93,67 @@ def _log_event(event_type: str, payload: dict) -> None:
     record = {"type": event_type, "at": datetime.now(timezone.utc).isoformat(), **payload}
     with EVENT_LOG.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
+
+
+def _load_memory_store_safe():
+    """Load the B3 memory store. Returns None (memory off) on any failure."""
+    try:
+        from buddy_core.memory.memory import MemoryStore
+
+        tools_cfg = load_tools_config()
+        mem = getattr(tools_cfg, "memory", None)
+        path = getattr(mem, "path", None)
+        cap = getattr(mem, "cap", None)
+        return MemoryStore(path=path, cap=cap)
+    except Exception:
+        return None
+
+
+def _recall_memories_safe(store, limit: int = MEMORY_RECALL_DEFAULT) -> list:
+    """Recall the last ``limit`` memories. Never raises — [] on any failure."""
+    if store is None:
+        return []
+    try:
+        memories = store.recall(limit=limit)
+    except Exception:
+        return []
+    return [m for m in memories if isinstance(m, dict)]
+
+
+def _remember_safe(store, kind: str, text: str) -> None:
+    """Remember one redacted summary. Never raises — memory must not break run()."""
+    if store is None:
+        return
+    try:
+        store.remember(kind, text)
+    except Exception:
+        pass
+
+
+def _make_consent_checker(ops_consent):
+    """Build the executor approval callback from server context (Track B3).
+
+    ``ops_consent`` is the server's ops ConsentManager (or a duck-typed
+    fake in tests). None → no approvals exist → destructive steps pause
+    fail-closed. The checker polls the sha-indexed queue with a bounded
+    wait, then returns False (fail closed on deny/timeout/error).
+    """
+    if ops_consent is None:
+        return None
+
+    def _check(record: dict) -> bool:
+        try:
+            from buddy_core.agents import executor as _exec
+
+            return bool(
+                _exec.ops_poll_for_sha(
+                    ops_consent, record.get("sha", ""), record.get("tool", "")
+                )
+            )
+        except Exception:
+            return False
+
+    return _check
 
 
 def _model_names(client: object) -> list[str]:
@@ -225,9 +295,21 @@ def _run_list_apps(task_id: str, apps_cfg, tools_cfg, limits, planner: str = "fa
 
 
 def _run_code(
-    task_id: str, command: str, rel_path: str, models, tools_cfg, source: str, planner: str = "fallback"
+    task_id: str,
+    command: str,
+    rel_path: str,
+    models,
+    tools_cfg,
+    source: str,
+    planner: str = "fallback",
+    ops_consent=None,
 ) -> TaskResult:
-    """Coder flow: LLM drafts content → validated write_file plan → executor runs it."""
+    """Coder flow: LLM drafts content → validated write_file plan → executor runs it.
+
+    Track B3: the executor runs with the run's consent checker, so
+    regenerating an existing file pauses for laptop consent instead of
+    silently overwriting.
+    """
     import ollama
 
     from buddy_core.agents import coder
@@ -242,7 +324,7 @@ def _run_code(
         err = f"{type(exc).__name__}: {exc}"
         _log_event("task_failed", {"task_id": task_id, "error": err, "planner": planner})
         return TaskResult(ok=False, output=err, task_id=task_id)
-    result = execute_plan(plan, tools_cfg, task_id, _log_event)
+    result = execute_plan(plan, tools_cfg, task_id, _log_event, _make_consent_checker(ops_consent))
     if result.ok:
         _log_event("task_completed", {"task_id": task_id, "result": result.output[:2000], "planner": planner})
         return TaskResult(ok=True, output=f"Saved {rel_path} in the workspace.", task_id=task_id, steps_taken=result.steps_taken + 1)
@@ -358,11 +440,21 @@ def _research_limits_from_plan(plan) -> tuple[int, int, int]:
     return max_results, max_pages, max_chars
 
 
-def run(command: str, task_id: str | None = None, source: str = "text") -> TaskResult:
+def run(
+    command: str,
+    task_id: str | None = None,
+    source: str = "text",
+    ops_consent=None,
+) -> TaskResult:
     """Execute a command end-to-end. Never raises on agent failure — returns TaskResult.
 
     source: "text" (default, POST /command — quality-first) or "voice"
     (voice_loop — latency-first, prefers voice_model). See _pick_model.
+
+    ops_consent (Track B3): the server's ops ConsentManager authorizing
+    destructive plan steps (non-allowlisted shell, overwriting writes).
+    None (voice loop, CLI) means no approvals exist — destructive steps
+    pause fail-closed with the B3 consent message.
 
     Track A2 — no silent task loss: task_started + config loads live INSIDE
     the try block, so a corrupt config or a failed log write still emits
@@ -374,6 +466,11 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
     (launch/list/code/research). Completion events carry
     ``planner``: "llm"|"fallback". ``source`` still selects the model for
     summarization (and code drafting) via _pick_model.
+
+    Track B3 — memory: redacted task summaries are remembered
+    (task_started on entry, task_completed on exit) and the last few
+    memories are injected into the LLM planner prompt as bounded DATA
+    context. Memory failures never break a run (all calls guarded).
     """
     task_id = task_id or uuid.uuid4().hex[:12]
     try:
@@ -389,6 +486,28 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
         except Exception:
             pass
         return TaskResult(ok=False, output="Empty command.", task_id=task_id)
+    # Memory + recall live OUTSIDE the dispatch try block: every memory call
+    # is individually guarded, so a corrupt store can never convert a good
+    # run into task_failed. _run_inner owns all lifecycle events.
+    store = _load_memory_store_safe()
+    _remember_safe(store, "task_started", command[:200])
+    memories = _recall_memories_safe(store)
+    result = _run_inner(command, task_id, source, ops_consent, memories)
+    # Completion summary is metadata only (truncated command, outcome, step
+    # count) — tool outputs (file bodies, stdout, page text) are NEVER
+    # remembered, so no raw file contents reach the store after read steps.
+    _remember_safe(
+        store,
+        "task_completed",
+        f"command={command[:200]} ok={result.ok} steps={result.steps_taken}",
+    )
+    return result
+
+
+def _run_inner(
+    command: str, task_id: str, source: str, ops_consent, memories: list
+) -> TaskResult:
+    """Dispatch body of run(): routing, events, planner attribution."""
     try:
         _log_event("task_started", {"task_id": task_id, "text": command[:200], "source": source})
 
@@ -400,10 +519,20 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
         # Track B1 — try the LLM planner FIRST (silent on any failure).
         llm_plan = None
         try:
-            candidate = build_llm_plan(command, tools_cfg, models)
+            try:
+                candidate = build_llm_plan(command, tools_cfg, models, memories=memories)
+            except TypeError:
+                # Patched/older build_llm_plan without the memories kwarg
+                # (e.g. B1-era test doubles) — retry without context. Same
+                # precedent as researcher.run_research's single-arg
+                # llm_summarize fallback. A genuine internal TypeError just
+                # raises again below and falls back deterministically.
+                candidate = build_llm_plan(command, tools_cfg, models)
             # Re-enforce caps at the orchestration boundary (truncate+reject:
             # overlong or over-deep plans are rejected here, never executed).
-            validate_plan(candidate, limits)
+            # Track B3: re-enforced WITH the workspace jail — a traversal
+            # path falls back to deterministic builders, never executes.
+            validate_plan(candidate, limits, tools_cfg.files)
             llm_plan = candidate
         except Exception:
             llm_plan = None
@@ -418,9 +547,15 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
                 mr, mp, mc = _research_limits_from_plan(llm_plan)
                 return _run_research(task_id, command, models, tools_cfg, mr, mp, mc, source, "llm")
             if tools_in_plan and tools_in_plan <= EXECUTOR_TOOLS:
+                # Track B3: pure shell/read/list/write LLM plans EXECUTE here
+                # (destructive steps pause for laptop consent via the run's
+                # ops queue). Genuinely mixed/unknown shapes fall through to
+                # the deterministic fallback below.
                 from buddy_core.agents.executor import execute_plan
 
-                result = execute_plan(llm_plan, tools_cfg, task_id, _log_event)
+                result = execute_plan(
+                    llm_plan, tools_cfg, task_id, _log_event, _make_consent_checker(ops_consent)
+                )
                 if result.ok:
                     _log_event(
                         "task_completed",
@@ -438,7 +573,8 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
             elif len(llm_plan.steps) == 1 and llm_plan.steps[0].tool == "list_apps":
                 return _run_list_apps(task_id, apps_cfg, tools_cfg, limits, planner="llm")
             # Mixed or otherwise unhandled LLM plans: fall through to the
-            # deterministic fallback (B3 wires general execution).
+            # deterministic fallback (fail closed — B3 executes only pure
+            # research / pure shell+files / single launch/list shapes).
 
         app_key = resolve_launch_intent(command, apps_cfg)
         if app_key:
@@ -455,7 +591,9 @@ def run(command: str, task_id: str | None = None, source: str = "text") -> TaskR
             return _run_list_apps(task_id, apps_cfg, tools_cfg, limits, planner="fallback")
         code_target = coder_resolve_target(command)
         if code_target:
-            return _run_code(task_id, command, code_target, models, tools_cfg, source, planner="fallback")
+            return _run_code(
+                task_id, command, code_target, models, tools_cfg, source, planner="fallback", ops_consent=ops_consent
+            )
         plan = build_research_plan(command, limits)
         validate_plan(plan, limits)
         mr, mp, mc = _research_limits_from_plan(plan)
