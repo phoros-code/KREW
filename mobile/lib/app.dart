@@ -14,6 +14,7 @@ import 'services/buddy_api.dart';
 import 'services/proximity_service.dart';
 import 'services/secure_store.dart';
 import 'theme/buddy_theme.dart';
+import 'widgets/a11y.dart';
 import 'widgets/status_header.dart';
 import 'widgets/task_notification_banner.dart';
 
@@ -78,6 +79,11 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   bool _streamConnected = false;
   int _connectAttempt = 0;
 
+  /// Track C2: last announced live-region state — prevents repeat
+  /// announcements on unrelated rebuilds.
+  ProximityMode? _lastAnnouncedMode;
+  BuddyConnection? _lastAnnouncedConnection;
+
   /// Auto-reconnect state (Track A5.8): consecutive-failure count + pending
   /// timer + the 30s no-frame-no-comment stall watchdog.
   Timer? _reconnectTimer;
@@ -106,6 +112,32 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
 
   void _onProximityChanged() {
     if (mounted) setState(() {});
+    // Track C2: live-region announcements on NEAR↔FAR and offline/online
+    // transitions only (polite, except offline which is assertive).
+    final ProximityMode mode = _proximity.mode;
+    final BuddyConnection connection = _proximity.connection;
+    if (mode != _lastAnnouncedMode) {
+      final ProximityMode? previous = _lastAnnouncedMode;
+      _lastAnnouncedMode = mode;
+      // Skip the very first emission (initial FAR at boot) — announce only
+      // real transitions.
+      if (previous != null) {
+        announceLiveRegion(proximityAnnounceMessage(mode));
+      }
+    }
+    if (connection != _lastAnnouncedConnection) {
+      final BuddyConnection? previous = _lastAnnouncedConnection;
+      _lastAnnouncedConnection = connection;
+      // Skip the initial unknown at boot; announce online/offline only.
+      if (previous != null &&
+          (connection == BuddyConnection.online ||
+              connection == BuddyConnection.offline)) {
+        announceLiveRegion(
+          connectionAnnounceMessage(connection),
+          assertive: connectionIsAssertive(connection),
+        );
+      }
+    }
   }
 
   Future<void> _boot() async {
@@ -383,6 +415,9 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
               if (mounted) setState(() => _tab = 2);
             },
           );
+          // Track C2: live-region announcement from the same notice path —
+          // polite except failures (assertive).
+          announceTaskNotification(notice);
         }
       },
       onError: (Object err) {
@@ -522,6 +557,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
     if (_bootError != null) {
       // Designed boot-failure state (Track A5.6): secure storage unreadable.
       // One explanatory line + Retry — same tokens, no new styling.
+      // Track C2: container semantics + 48dp Retry target.
       final String message = _bootError!;
       return MaterialApp(
         title: 'Everyday Buddy',
@@ -532,40 +568,53 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(BuddySpacing.s5),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  Builder(
-                    builder: (BuildContext inner) {
-                      final bool dark =
-                          Theme.of(inner).brightness == Brightness.dark;
-                      return Icon(
-                        Icons.error_outline,
-                        size: 32,
-                        color: dark
-                            ? BuddyColors.errorOnDark
-                            : BuddyColors.errorOnLight,
-                      );
-                    },
-                  ),
-                  const SizedBox(height: BuddySpacing.s3),
-                  Text(
-                    'Could not start',
-                    style: Theme.of(context).textTheme.titleMedium,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: BuddySpacing.s2),
-                  Text(
-                    message,
-                    style: Theme.of(context).textTheme.bodySmall,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: BuddySpacing.s4),
-                  ElevatedButton(
-                    onPressed: _retryBoot,
-                    child: const Text('Retry'),
-                  ),
-                ],
+              child: Semantics(
+                label: 'Could not start. $message',
+                container: true,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Builder(
+                      builder: (BuildContext inner) {
+                        final bool dark =
+                            Theme.of(inner).brightness == Brightness.dark;
+                        return ExcludeSemantics(
+                          child: Icon(
+                            Icons.error_outline,
+                            size: 32,
+                            color: dark
+                                ? BuddyColors.errorOnDark
+                                : BuddyColors.errorOnLight,
+                          ),
+                        );
+                      },
+                    ),
+                    const SizedBox(height: BuddySpacing.s3),
+                    Text(
+                      'Could not start',
+                      style: Theme.of(context).textTheme.titleMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: BuddySpacing.s2),
+                    Text(
+                      message,
+                      style: Theme.of(context).textTheme.bodySmall,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: BuddySpacing.s4),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(minHeight: 48),
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(48, 48),
+                          tapTargetSize: MaterialTapTargetSize.padded,
+                        ),
+                        onPressed: _retryBoot,
+                        child: const Text('Retry'),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -578,12 +627,16 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       theme: BuddyTheme.light(),
       darkTheme: BuddyTheme.dark(),
       home: _booting
-          ? const Scaffold(
+          ? Scaffold(
               body: Center(
-                child: SizedBox(
-                  width: BuddySpacing.s5,
-                  height: BuddySpacing.s5,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                child: Semantics(
+                  label: 'Starting Everyday Buddy, please wait',
+                  liveRegion: true,
+                  child: const SizedBox(
+                    width: BuddySpacing.s5,
+                    height: BuddySpacing.s5,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
                 ),
               ),
             )
@@ -637,6 +690,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                   // 4 destinations + labels + behavior identical; styling
                   // (8px indicator, primary/ink colors) comes from
                   // BuddyTheme.navigationBarTheme.
+                  // Track C2: tooltips mirror labels for screen readers.
                   NavigationBar(
                     selectedIndex: _tab,
                     onDestinationSelected: _onTab,
@@ -647,21 +701,25 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                         icon: Icon(Icons.link_outlined),
                         selectedIcon: Icon(Icons.link),
                         label: 'Pair',
+                        tooltip: 'Pair',
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.chat_bubble_outline),
                         selectedIcon: Icon(Icons.chat_bubble),
                         label: 'Chat',
+                        tooltip: 'Chat',
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.assignment_outlined),
                         selectedIcon: Icon(Icons.assignment),
                         label: 'Tasks',
+                        tooltip: 'Tasks',
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.monitor_outlined),
                         selectedIcon: Icon(Icons.monitor),
                         label: 'Screen',
+                        tooltip: 'Screen',
                       ),
                     ],
                   ),
@@ -686,43 +744,60 @@ class _UnpairStrip extends StatelessWidget {
     final Color muted = dark
         ? BuddyColors.inkMutedOnDark
         : BuddyColors.inkMutedOnLight;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: BuddySpacing.s4),
-      child: Row(
-        children: <Widget>[
-          Expanded(
-            child: Text(
-              savedHost == null ? 'Paired' : 'Paired to $savedHost',
-              style: BuddyTheme.mono(muted, size: 11),
-              overflow: TextOverflow.ellipsis,
+    // Track C2: the strip is at least 48dp tall; the Unpair action meets
+    // the 48x48 tap target.
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 48),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: BuddySpacing.s4),
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: Text(
+                savedHost == null ? 'Paired' : 'Paired to $savedHost',
+                style: BuddyTheme.mono(muted, size: 11),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-          ),
-          TextButton(
-            onPressed: () async {
-              final bool? confirm = await showDialog<bool>(
-                context: context,
-                builder: (BuildContext ctx) => AlertDialog(
-                  title: const Text('Unpair this laptop?'),
-                  content: const Text(
-                    'The token is deleted from secure storage. You can re-pair at any time from the laptop.',
+            TextButton(
+              style: TextButton.styleFrom(
+                minimumSize: const Size(48, 48),
+                tapTargetSize: MaterialTapTargetSize.padded,
+              ),
+              onPressed: () async {
+                final bool? confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (BuildContext ctx) => AlertDialog(
+                    title: const Text('Unpair this laptop?'),
+                    content: const Text(
+                      'The token is deleted from secure storage. You can re-pair at any time from the laptop.',
+                    ),
+                    actions: <Widget>[
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(48, 48),
+                          tapTargetSize: MaterialTapTargetSize.padded,
+                        ),
+                        onPressed: () => Navigator.of(ctx).pop(false),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          minimumSize: const Size(48, 48),
+                          tapTargetSize: MaterialTapTargetSize.padded,
+                        ),
+                        onPressed: () => Navigator.of(ctx).pop(true),
+                        child: const Text('Unpair'),
+                      ),
+                    ],
                   ),
-                  actions: <Widget>[
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      child: const Text('Cancel'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.of(ctx).pop(true),
-                      child: const Text('Unpair'),
-                    ),
-                  ],
-                ),
-              );
-              if (confirm == true) onUnpair();
-            },
-            child: const Text('Unpair'),
-          ),
-        ],
+                );
+                if (confirm == true) onUnpair();
+              },
+              child: const Text('Unpair'),
+            ),
+          ],
+        ),
       ),
     );
   }

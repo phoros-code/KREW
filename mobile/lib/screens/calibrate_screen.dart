@@ -190,87 +190,106 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
               ),
               if (!paired) ...<Widget>[
                 const SizedBox(height: BuddySpacing.s3),
-                Row(
-                  children: <Widget>[
-                    Icon(
-                      Icons.link_off_outlined,
-                      size: 16,
-                      color: muted,
-                    ),
-                    const SizedBox(width: BuddySpacing.s2),
-                    Expanded(
-                      child: Text(
-                        'Pair with the laptop first — the threshold lives on the server.',
-                        style: small,
+                Semantics(
+                  label:
+                      'Pair with the laptop first — the threshold lives on the server.',
+                  container: true,
+                  child: Row(
+                    children: <Widget>[
+                      ExcludeSemantics(
+                        child: Icon(
+                          Icons.link_off_outlined,
+                          size: 16,
+                          color: muted,
+                        ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: BuddySpacing.s2),
+                      Expanded(
+                        child: Text(
+                          'Pair with the laptop first — the threshold lives on the server.',
+                          style: small,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
               // Known FAR cause (Track A5.9): Bluetooth off / permission
               // denied renders here in plain words — never silent FAR.
               if (bleCause != null) ...<Widget>[
                 const SizedBox(height: BuddySpacing.s3),
-                Row(
-                  children: <Widget>[
-                    Icon(
-                      Icons.bluetooth_disabled_outlined,
-                      size: 16,
-                      color: warningText,
-                    ),
-                    const SizedBox(width: BuddySpacing.s2),
-                    Expanded(
-                      child: Text(bleCause, style: small),
-                    ),
-                  ],
+                Semantics(
+                  label: bleCause,
+                  container: true,
+                  child: Row(
+                    children: <Widget>[
+                      ExcludeSemantics(
+                        child: Icon(
+                          Icons.bluetooth_disabled_outlined,
+                          size: 16,
+                          color: warningText,
+                        ),
+                      ),
+                      const SizedBox(width: BuddySpacing.s2),
+                      Expanded(
+                        child: Text(bleCause, style: small),
+                      ),
+                    ],
+                  ),
                 ),
               ],
               const SizedBox(height: BuddySpacing.s3),
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text('Live signal', style: small),
-                        const SizedBox(height: BuddySpacing.s1),
-                        Text(
-                          rssi == null ? '—' : '$rssi dBm',
-                          style: BuddyTheme.mono(ink, size: 16),
+              Semantics(
+                label: rssi == null
+                    ? 'Live signal unavailable. Threshold ${widget.proximity.rssiNearThreshold} dBm, currently ${near ? 'near' : 'far'}.'
+                    : 'Live signal $rssi dBm. Threshold ${widget.proximity.rssiNearThreshold} dBm, currently ${near ? 'near' : 'far'}.',
+                container: true,
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text('Live signal', style: small),
+                          const SizedBox(height: BuddySpacing.s1),
+                          Text(
+                            rssi == null ? '—' : '$rssi dBm',
+                            style: BuddyTheme.mono(ink, size: 16),
+                          ),
+                          const SizedBox(height: BuddySpacing.s1),
+                          Text(
+                            'Threshold ${widget.proximity.rssiNearThreshold} dBm',
+                            style: small,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: BuddySpacing.s2,
+                        vertical: BuddySpacing.s1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: pillText.withValues(alpha: 0.12),
+                        borderRadius: const BorderRadius.all(
+                          Radius.circular(BuddyRadii.interactive),
                         ),
-                        const SizedBox(height: BuddySpacing.s1),
-                        Text(
-                          'Threshold ${widget.proximity.rssiNearThreshold} dBm',
-                          style: small,
+                        border: Border.all(
+                          color: pillText.withValues(alpha: 0.45),
                         ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: BuddySpacing.s2,
-                      vertical: BuddySpacing.s1,
-                    ),
-                    decoration: BoxDecoration(
-                      color: pillText.withValues(alpha: 0.12),
-                      borderRadius: const BorderRadius.all(
-                        Radius.circular(BuddyRadii.interactive),
                       ),
-                      border: Border.all(
-                        color: pillText.withValues(alpha: 0.45),
+                      child: Text(
+                        near ? 'NEAR' : 'FAR',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.6,
+                          color: pillText,
+                        ),
                       ),
                     ),
-                    child: Text(
-                      near ? 'NEAR' : 'FAR',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.6,
-                        color: pillText,
-                      ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
               const SizedBox(height: BuddySpacing.s3),
               Text(
@@ -290,20 +309,37 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: <Widget>[
-                  IconButton(
-                    icon: const Icon(Icons.remove),
-                    tooltip: 'Weaker by 1 dB',
-                    onPressed: !paired || _saving || _draft <= minThreshold
-                        ? null
-                        : () => setState(() => _draft--),
+                  // Track C2: stepper targets are 48x48.
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: IconButton(
+                      icon: const Icon(Icons.remove),
+                      tooltip: 'Weaker by 1 dB',
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size(48, 48),
+                        tapTargetSize: MaterialTapTargetSize.padded,
+                      ),
+                      onPressed: !paired || _saving || _draft <= minThreshold
+                          ? null
+                          : () => setState(() => _draft--),
+                    ),
                   ),
                   Text('$_draft dBm', style: BuddyTheme.mono(ink)),
-                  IconButton(
-                    icon: const Icon(Icons.add),
-                    tooltip: 'Stronger by 1 dB',
-                    onPressed: !paired || _saving || _draft >= maxThreshold
-                        ? null
-                        : () => setState(() => _draft++),
+                  SizedBox(
+                    width: 48,
+                    height: 48,
+                    child: IconButton(
+                      icon: const Icon(Icons.add),
+                      tooltip: 'Stronger by 1 dB',
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size(48, 48),
+                        tapTargetSize: MaterialTapTargetSize.padded,
+                      ),
+                      onPressed: !paired || _saving || _draft >= maxThreshold
+                          ? null
+                          : () => setState(() => _draft++),
+                    ),
                   ),
                 ],
               ),
@@ -320,24 +356,41 @@ class _CalibrateScreenState extends State<CalibrateScreen> {
               ),
               if (_error != null) ...<Widget>[
                 const SizedBox(height: BuddySpacing.s2),
-                Text(
-                  _error!,
-                  style: small?.copyWith(color: errorText),
+                Semantics(
+                  label: 'Threshold save failed: $_error',
+                  container: true,
+                  liveRegion: true,
+                  child: Text(
+                    _error!,
+                    style: small?.copyWith(color: errorText),
+                  ),
                 ),
               ],
               const SizedBox(height: BuddySpacing.s3),
-              ElevatedButton(
-                onPressed: !paired || _saving ? null : _apply,
-                child: _saving
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
-                        ),
-                      )
-                    : const Text('Set threshold'),
+              // Track C2: ConstrainedBox(minHeight:48) keeps the 48dp tap
+              // target while growing with text scaling.
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
+                  onPressed: !paired || _saving ? null : _apply,
+                  child: _saving
+                      ? Semantics(
+                          label: 'Saving threshold, please wait',
+                          child: const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          ),
+                        )
+                      : const Text('Set threshold'),
+                ),
               ),
             ],
           ),

@@ -42,6 +42,16 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _sendError;
   bool _sending = false;
 
+  /// Track C2: error-card focus target — requested when the send error
+  /// appears so screen readers land on it.
+  final FocusNode _sendErrorFocus = FocusNode();
+
+  @override
+  void dispose() {
+    _sendErrorFocus.dispose();
+    super.dispose();
+  }
+
   TaskStatus? _statusFor(BuddyEvent e) {
     switch (e.type) {
       case 'task_started':
@@ -65,6 +75,10 @@ class _ChatScreenState extends State<ChatScreen> {
     } on BuddyApiException catch (e) {
       if (!mounted) return;
       setState(() => _sendError = _humanizeSend(e));
+      // Track C2: move focus to the error card when it appears.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _sendErrorFocus.requestFocus();
+      });
     } finally {
       if (mounted) setState(() => _sending = false);
     }
@@ -138,46 +152,63 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // Stream error state (designed, not raw JSON).
           if (widget.streamError != null)
-            Container(
-              padding: const EdgeInsets.all(BuddySpacing.s4),
-              decoration: BoxDecoration(
-                border: Border.all(color: errorText),
-                borderRadius: const BorderRadius.all(
-                  Radius.circular(BuddyRadii.container),
+            Semantics(
+              label: 'Live updates paused: ${widget.streamError}',
+              container: true,
+              child: Container(
+                padding: const EdgeInsets.all(BuddySpacing.s4),
+                decoration: BoxDecoration(
+                  border: Border.all(color: errorText),
+                  borderRadius: const BorderRadius.all(
+                    Radius.circular(BuddyRadii.container),
+                  ),
                 ),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Icon(
-                    Icons.error_outline,
-                    size: 18,
-                    color: errorText,
-                  ),
-                  const SizedBox(width: BuddySpacing.s3),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(
-                          'Live updates paused',
-                          style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(
-                                color: errorText,
-                                fontWeight: FontWeight.w700,
-                              ),
-                        ),
-                        const SizedBox(height: BuddySpacing.s1),
-                        Text(widget.streamError!, style: small),
-                        const SizedBox(height: BuddySpacing.s3),
-                        OutlinedButton(
-                          onPressed: widget.onRetryStream,
-                          child: const Text('Reconnect'),
-                        ),
-                      ],
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    ExcludeSemantics(
+                      child: Icon(
+                        Icons.error_outline,
+                        size: 18,
+                        color: errorText,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(width: BuddySpacing.s3),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            'Live updates paused',
+                            style: Theme.of(context).textTheme.labelLarge
+                                ?.copyWith(
+                                  color: errorText,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                          ),
+                          const SizedBox(height: BuddySpacing.s1),
+                          Text(widget.streamError!, style: small),
+                          const SizedBox(height: BuddySpacing.s3),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(
+                              minHeight: 48,
+                              minWidth: 48,
+                            ),
+                            child: OutlinedButton(
+                              onPressed: widget.onRetryStream,
+                              style: OutlinedButton.styleFrom(
+                                minimumSize: const Size(48, 48),
+                                tapTargetSize:
+                                    MaterialTapTargetSize.padded,
+                              ),
+                              child: const Text('Reconnect'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           if (widget.streamError != null)
@@ -185,24 +216,33 @@ class _ChatScreenState extends State<ChatScreen> {
 
           // Send error state.
           if (_sendError != null)
-            Container(
-              padding: const EdgeInsets.all(BuddySpacing.s3),
-              decoration: BoxDecoration(
-                border: Border.all(color: errorText),
-                borderRadius: const BorderRadius.all(
-                  Radius.circular(BuddyRadii.container),
-                ),
-              ),
-              child: Row(
-                children: <Widget>[
-                  Icon(
-                    Icons.error_outline,
-                    size: 16,
-                    color: errorText,
+            Focus(
+              focusNode: _sendErrorFocus,
+              child: Semantics(
+                label: 'Send failed: $_sendError',
+                container: true,
+                child: Container(
+                  padding: const EdgeInsets.all(BuddySpacing.s3),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: errorText),
+                    borderRadius: const BorderRadius.all(
+                      Radius.circular(BuddyRadii.container),
+                    ),
                   ),
-                  const SizedBox(width: BuddySpacing.s2),
-                  Expanded(child: Text(_sendError!, style: small)),
-                ],
+                  child: Row(
+                    children: <Widget>[
+                      ExcludeSemantics(
+                        child: Icon(
+                          Icons.error_outline,
+                          size: 16,
+                          color: errorText,
+                        ),
+                      ),
+                      const SizedBox(width: BuddySpacing.s2),
+                      Expanded(child: Text(_sendError!, style: small)),
+                    ],
+                  ),
+                ),
               ),
             ),
           if (_sendError != null) const SizedBox(height: BuddySpacing.s4),
@@ -328,30 +368,35 @@ class _EmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(BuddySpacing.s5),
-      decoration: BoxDecoration(
-        border: Border.all(color: hairline),
-        borderRadius: const BorderRadius.all(
-          Radius.circular(BuddyRadii.container),
+    // Track C2: empty states announce title + hint as one container.
+    return Semantics(
+      label: '$title. $hint',
+      container: true,
+      child: Container(
+        padding: const EdgeInsets.all(BuddySpacing.s5),
+        decoration: BoxDecoration(
+          border: Border.all(color: hairline),
+          borderRadius: const BorderRadius.all(
+            Radius.circular(BuddyRadii.container),
+          ),
         ),
-      ),
-      child: Column(
-        children: <Widget>[
-          Icon(icon, size: 32, color: muted),
-          const SizedBox(height: BuddySpacing.s3),
-          Text(
-            title,
-            style: Theme.of(context).textTheme.titleMedium,
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: BuddySpacing.s2),
-          Text(
-            hint,
-            style: Theme.of(context).textTheme.bodySmall,
-            textAlign: TextAlign.center,
-          ),
-        ],
+        child: Column(
+          children: <Widget>[
+            ExcludeSemantics(child: Icon(icon, size: 32, color: muted)),
+            const SizedBox(height: BuddySpacing.s3),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleMedium,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: BuddySpacing.s2),
+            Text(
+              hint,
+              style: Theme.of(context).textTheme.bodySmall,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }

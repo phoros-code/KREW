@@ -71,30 +71,43 @@ class _PreviewScreenState extends State<PreviewScreen> {
           const SizedBox(height: BuddySpacing.s3),
           // Source toggle: scale-token spacing, 8px interactive radius, flat
           // fill — no gradients, no decorative effects (DESIGN.md).
-          SegmentedButton<PreviewSource>(
-            segments: const <ButtonSegment<PreviewSource>>[
-              ButtonSegment<PreviewSource>(
-                value: PreviewSource.screen,
-                label: Text('Screen'),
-                icon: Icon(Icons.monitor_outlined),
-              ),
-              ButtonSegment<PreviewSource>(
-                value: PreviewSource.webcam,
-                label: Text('Webcam'),
-                icon: Icon(Icons.videocam_outlined),
-              ),
-            ],
-            selected: <PreviewSource>{_source},
-            onSelectionChanged: (Set<PreviewSource> next) =>
-                setState(() => _source = next.single),
-            style: SegmentedButton.styleFrom(
-              shape: const RoundedRectangleBorder(
-                borderRadius: BorderRadius.all(
-                  Radius.circular(BuddyRadii.interactive),
+          // Track C2: 48dp tall with tooltips; labels unchanged.
+          ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 48),
+            child: Semantics(
+              label:
+                  'Preview source, ${webcam ? 'webcam' : 'screen'} selected',
+              container: true,
+              child: SegmentedButton<PreviewSource>(
+                segments: const <ButtonSegment<PreviewSource>>[
+                  ButtonSegment<PreviewSource>(
+                    value: PreviewSource.screen,
+                    label: Text('Screen'),
+                    icon: Icon(Icons.monitor_outlined),
+                    tooltip: 'Show laptop screen',
+                  ),
+                  ButtonSegment<PreviewSource>(
+                    value: PreviewSource.webcam,
+                    label: Text('Webcam'),
+                    icon: Icon(Icons.videocam_outlined),
+                    tooltip: 'Show laptop webcam',
+                  ),
+                ],
+                selected: <PreviewSource>{_source},
+                onSelectionChanged: (Set<PreviewSource> next) =>
+                    setState(() => _source = next.single),
+                style: SegmentedButton.styleFrom(
+                  minimumSize: const Size(48, 48),
+                  tapTargetSize: MaterialTapTargetSize.padded,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius: BorderRadius.all(
+                      Radius.circular(BuddyRadii.interactive),
+                    ),
+                  ),
                 ),
+                showSelectedIcon: false,
               ),
             ),
-            showSelectedIcon: false,
           ),
           const SizedBox(height: BuddySpacing.s4),
           ScreenPreview(

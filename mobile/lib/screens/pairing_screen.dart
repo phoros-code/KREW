@@ -48,6 +48,13 @@ class _PairingScreenState extends State<PairingScreen> {
   String? _errorMessage;
   String? _errorCode;
 
+  /// Track C2: focus traversal for the pairing form + error-card focus.
+  final FocusNode _hostFocus = FocusNode();
+  final FocusNode _tokenFocus = FocusNode();
+  final FocusNode _fpFocus = FocusNode();
+  final FocusNode _btFocus = FocusNode();
+  final FocusNode _errorFocus = FocusNode();
+
   @override
   void initState() {
     super.initState();
@@ -84,6 +91,11 @@ class _PairingScreenState extends State<PairingScreen> {
     _tokenController.dispose();
     _btController.dispose();
     _fpController.dispose();
+    _hostFocus.dispose();
+    _tokenFocus.dispose();
+    _fpFocus.dispose();
+    _btFocus.dispose();
+    _errorFocus.dispose();
     super.dispose();
   }
 
@@ -147,11 +159,18 @@ class _PairingScreenState extends State<PairingScreen> {
         _errorCode = e.code;
         _errorMessage = _humanize(e);
       });
+      // Track C2: move focus to the error card when it appears.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _errorFocus.requestFocus();
+      });
     } catch (_) {
       if (!mounted) return;
       setState(() {
         _errorCode = 'unreachable';
         _errorMessage = BuddyApi.routeError.message;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _errorFocus.requestFocus();
       });
     } finally {
       probe?.close();
@@ -207,25 +226,36 @@ class _PairingScreenState extends State<PairingScreen> {
 
             // Empty state — shown above the form on first run.
             if (widget.initialHost == null)
-              Container(
-                padding: const EdgeInsets.all(BuddySpacing.s4),
-                decoration: BoxDecoration(
-                  border: Border.all(color: hairline),
-                  borderRadius: const BorderRadius.all(
-                    Radius.circular(BuddyRadii.container),
-                  ),
-                ),
-                child: Row(
-                  children: <Widget>[
-                    Icon(Icons.laptop_outlined, size: 20, color: muted),
-                    const SizedBox(width: BuddySpacing.s3),
-                    Expanded(
-                      child: Text(
-                        'No laptop yet. Run the pairing script on the laptop to get its IP and token, then enter them below.',
-                        style: small,
-                      ),
+              Semantics(
+                label:
+                    'No laptop yet. Run the pairing script on the laptop to get its IP and token, then enter them below.',
+                container: true,
+                child: Container(
+                  padding: const EdgeInsets.all(BuddySpacing.s4),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: hairline),
+                    borderRadius: const BorderRadius.all(
+                      Radius.circular(BuddyRadii.container),
                     ),
-                  ],
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      ExcludeSemantics(
+                        child: Icon(
+                          Icons.laptop_outlined,
+                          size: 20,
+                          color: muted,
+                        ),
+                      ),
+                      const SizedBox(width: BuddySpacing.s3),
+                      Expanded(
+                        child: Text(
+                          'No laptop yet. Run the pairing script on the laptop to get its IP and token, then enter them below.',
+                          style: small,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             if (widget.initialHost == null)
@@ -235,8 +265,11 @@ class _PairingScreenState extends State<PairingScreen> {
             const SizedBox(height: BuddySpacing.s2),
             TextFormField(
               controller: _hostController,
+              focusNode: _hostFocus,
               validator: _validateHost,
               keyboardType: TextInputType.text,
+              textInputAction: TextInputAction.next,
+              onFieldSubmitted: (_) => _tokenFocus.requestFocus(),
               autofillHints: const <String>[AutofillHints.url],
               decoration: const InputDecoration(
                 hintText: '192.168.1.10',
@@ -252,15 +285,22 @@ class _PairingScreenState extends State<PairingScreen> {
             const SizedBox(height: BuddySpacing.s2),
             TextFormField(
               controller: _tokenController,
+              focusNode: _tokenFocus,
               validator: _validateToken,
               obscureText: _obscured,
               autocorrect: false,
               enableSuggestions: false,
+              textInputAction: TextInputAction.next,
+              onFieldSubmitted: (_) => _fpFocus.requestFocus(),
               decoration: InputDecoration(
                 hintText: 'paste the token from the laptop',
                 prefixIcon: const Icon(Icons.key_outlined, size: 18),
                 suffixIcon: IconButton(
                   tooltip: _obscured ? 'Show token' : 'Hide token',
+                  style: IconButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
                   icon: Icon(
                     _obscured ? Icons.visibility_outlined : Icons.visibility_off_outlined,
                     size: 18,
@@ -287,10 +327,13 @@ class _PairingScreenState extends State<PairingScreen> {
             const SizedBox(height: BuddySpacing.s2),
             TextFormField(
               controller: _fpController,
+              focusNode: _fpFocus,
               validator: _validateFingerprint,
               autocorrect: false,
               enableSuggestions: false,
               keyboardType: TextInputType.text,
+              textInputAction: TextInputAction.next,
+              onFieldSubmitted: (_) => _btFocus.requestFocus(),
               decoration: const InputDecoration(
                 hintText: '6c9caeac… (Cert SHA256 from pair_device.py)',
                 prefixIcon: Icon(Icons.verified_outlined, size: 18),
@@ -313,9 +356,14 @@ class _PairingScreenState extends State<PairingScreen> {
             const SizedBox(height: BuddySpacing.s2),
             TextFormField(
               controller: _btController,
+              focusNode: _btFocus,
               autocorrect: false,
               enableSuggestions: false,
               keyboardType: TextInputType.text,
+              textInputAction: TextInputAction.done,
+              onFieldSubmitted: (_) {
+                if (!_testing) _testAndSave();
+              },
               decoration: const InputDecoration(
                 hintText: 'AA:BB:CC:DD:EE:FF (Android) or UUID (iOS)',
                 prefixIcon: Icon(Icons.bluetooth_outlined, size: 18),
@@ -334,64 +382,82 @@ class _PairingScreenState extends State<PairingScreen> {
             // Error state — human text for the 401/429/unreachable shapes.
             if (_errorMessage != null) ...<Widget>[
               const SizedBox(height: BuddySpacing.s4),
-              Container(
-                padding: const EdgeInsets.all(BuddySpacing.s4),
-                decoration: BoxDecoration(
-                  border: Border.all(color: errorText),
-                  borderRadius: const BorderRadius.all(
-                    Radius.circular(BuddyRadii.container),
-                  ),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Icon(
-                      Icons.error_outline,
-                      size: 18,
-                      color: errorText,
-                    ),
-                    const SizedBox(width: BuddySpacing.s3),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            'Pairing failed',
-                            style: Theme.of(context).textTheme.labelLarge
-                                ?.copyWith(
-                                  color: errorText,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                          ),
-                          const SizedBox(height: BuddySpacing.s1),
-                          Text(_errorMessage!, style: small),
-                          if (_errorCode != null) ...<Widget>[
-                            const SizedBox(height: BuddySpacing.s2),
-                            Text(
-                              'code: $_errorCode',
-                              style: BuddyTheme.mono(muted, size: 11),
-                            ),
-                          ],
-                        ],
+              Focus(
+                focusNode: _errorFocus,
+                child: Semantics(
+                  label: 'Pairing failed: $_errorMessage',
+                  container: true,
+                  child: Container(
+                    padding: const EdgeInsets.all(BuddySpacing.s4),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: errorText),
+                      borderRadius: const BorderRadius.all(
+                        Radius.circular(BuddyRadii.container),
                       ),
                     ),
-                  ],
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        ExcludeSemantics(
+                          child: Icon(
+                            Icons.error_outline,
+                            size: 18,
+                            color: errorText,
+                          ),
+                        ),
+                        const SizedBox(width: BuddySpacing.s3),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                'Pairing failed',
+                                style: Theme.of(context).textTheme.labelLarge
+                                    ?.copyWith(
+                                      color: errorText,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                              const SizedBox(height: BuddySpacing.s1),
+                              Text(_errorMessage!, style: small),
+                              if (_errorCode != null) ...<Widget>[
+                                const SizedBox(height: BuddySpacing.s2),
+                                Text(
+                                  'code: $_errorCode',
+                                  style: BuddyTheme.mono(muted, size: 11),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ],
 
             const SizedBox(height: BuddySpacing.s5),
-            SizedBox(
-              height: BuddySpacing.s7,
+            // Track C2: ConstrainedBox(minHeight:48) instead of a fixed
+            // 48px box — grows with text scaling, never below the tap target.
+            ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
               child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(48, 48),
+                  tapTargetSize: MaterialTapTargetSize.padded,
+                ),
                 onPressed: _testing ? null : _testAndSave,
                 child: _testing
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
+                    ? Semantics(
+                        label: 'Testing connection, please wait',
+                        child: const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         ),
                       )
                     : const Text('Test connection and save'),
