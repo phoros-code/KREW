@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everyday Buddy palette tokens mirrored from DESIGN.md (Track D). -->
+<resources>
+    <!-- Launch splash / window background, light mode. -->
+    <color name="launch_background">#F5F4F0</color>
+    <!-- Adaptive-icon fill: primary green. -->
+    <color name="ic_launcher_background">#1E5F4A</color>
+    <!-- Icon glyph amber (duplicated here for reuse; the foreground vector
+         uses the literal so it renders even if colors are ever split). -->
+    <color name="ic_launcher_foreground">#E8A33D</color>
+</resources>

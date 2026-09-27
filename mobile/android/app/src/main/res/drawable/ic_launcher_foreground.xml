@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everyday Buddy launcher foreground (Track D): chat-bubble + terminal
+     ">_" glyph in token amber #E8A33D on transparent. Shown over the
+     @color/ic_launcher_background fill on API 26+ via mipmap-anydpi-v26. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Speech bubble: rounded rect (26,28)-(82,74), r=10, tail bottom-left. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#E8A33D"
+        android:strokeWidth="5"
+        android:strokeLineJoin="round"
+        android:pathData="M36,28 h36 a10,10 0 0 1 10,10 v26 a10,10 0 0 1 -10,10 H52 L40,88 L42,74 H36 a10,10 0 0 1 -10,-10 V38 a10,10 0 0 1 10,-10 z" />
+    <!-- Terminal ">_" prompt inside the bubble. -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#E8A33D"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M46,48 l10,9 -10,9 M60,64 h10" />
+</vector>

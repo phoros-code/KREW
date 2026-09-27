@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everyday Buddy dark-mode overrides (Track D): splash/window background
+     goes near-black; icon colors are identical day/night (single source). -->
+<resources>
+    <color name="launch_background">#12131A</color>
+</resources>
