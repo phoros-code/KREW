@@ -63,3 +63,30 @@ Run the **full** test suite, not just tests for what you just built — regressi
 ## CI suggestion
 
 A minimal GitHub Actions workflow: `pytest` on every push, plus a `pip-audit` step. Add a Flutter `flutter test` step once the mobile app exists. Keep it fast enough that you actually run it before every phase checkpoint, not just before a release.
+
+## Release builds (Track D)
+
+Android — per-ABI release APKs (R8 minify + resource shrink on):
+
+1. One-time per release machine, OUTSIDE the repo (never committed):
+   `keytool -genkeypair -v -keystore C:\secure\everyday-buddy-release.keystore -alias everyday-buddy -keyalg RSA -keysize 2048 -validity 10000`
+2. Copy `mobile/android/key.properties.example` to `mobile/android/key.properties` and fill in the four values (gitignored — verify with `git status` before every commit).
+3. `flutter build apk --release --split-per-abi` (needs JDK 17: `$env:JAVA_HOME = 'C:\src\jdk17'`). Without `key.properties` the build still succeeds on debug keys — that APK is for local testing only, NEVER upload it.
+   KNOWN BLOCKER 2026-09-27 (this laptop): release builds die in
+   `:app:compileFlutterBuildRelease` — Windows Smart App Control (On) blocks
+   `gen_snapshot.exe` / `font-subset.exe` in the Flutter SDK cache ("An
+   Application Control policy has blocked this file"). Debug builds are
+   unaffected (no AOT step). Human-only fix: Windows Security → App & browser
+   control → Smart App Control → Off (needs admin; re-enabling requires a
+   clean Windows install), or an IT-approved exclusion for `C:\src\flutter`.
+   Until then, release readiness is proven one step short of the APK:
+   `:app:signingReport` (release→debug fallback), `:app:processReleaseResources`
+   (manifest merge + aapt link of all Track D XML), and the merged release
+   manifest shows label/allowBackup/networkSecurityConfig/dataExtractionRules.
+4. Per-ABI outputs land in `mobile/build/app/outputs/flutter-apk/` (`app-armeabi-v7a-release.apk`, `app-arm64-v8a-release.apk`, `app-x86_64-release.apk`); most phones take arm64-v8a. For the Play Store prefer `flutter build appbundle --release`.
+
+iOS — needs a Mac (no macOS here, so this path is buildable-by-design, not built):
+
+1. On the Mac: `flutter pub get`, then `cd ios && pod install` (generates `Pods/` + `Podfile.lock`, both gitignored).
+2. Open `ios/Runner.xcworkspace` in Xcode, set the Team + signing certificate (deployment target 15.0 must match the `platform :ios` pin in `ios/Podfile`), Product → Archive.
+3. The app does NO mDNS discovery (direct IP entry on the pair screen), so no Bonjour services are declared; `NSMicrophoneUsageDescription` stays OUT until the B4 phone-voice feature lands.

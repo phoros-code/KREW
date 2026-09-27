@@ -6,6 +6,14 @@
 	<string>Bluetooth is used to measure signal strength to your laptop for the near/far indicator. Scanning stays off unless you enter a laptop Bluetooth ID when pairing.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Bluetooth is used to measure signal strength to your laptop for the near/far indicator.</string>
+	<!-- LAN HTTPS to the laptop control server (direct IP entry, no discovery). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Everyday Buddy connects to your laptop on the local network to send commands and receive task updates.</string>
+	<!-- No NSBonjourServices: the app takes a direct IP on the pair screen and
+	     does NO mDNS/Bonjour discovery, so no browsed service strings are needed.
+	     NOTE (Track B4 phone-voice): do NOT add NSMicrophoneUsageDescription
+	     until the phone-voice feature lands — an unused mic key triggers
+	     App Store review questions. -->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
