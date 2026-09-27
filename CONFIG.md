@@ -74,6 +74,19 @@ agent_limits:
 
 **Rule:** the denylist is checked before the allowlist and always wins, even if a command would otherwise match an allowlist pattern. See `SECURITY.md` → Tool sandboxing.
 
+```yaml
+memory:                       # Track B3: bounded agent-state store
+  path: "logs/memory.jsonl"   # repo-relative unless absolute; agent summaries only, never raw file contents
+  cap: 500                    # max entries; oldest evicted first
+```
+
+**Memory rule:** the orchestrator remembers redacted task summaries
+(`task_started` command text truncated to 200 chars, `task_completed`
+with outcome + step count only — tool outputs are never stored) and
+injects the last 5 into the LLM planner prompt as bounded (2000-char)
+DATA context. Missing/garbage values fall back to the defaults above —
+never unbounded.
+
 ## `config/apps.yaml`
 
 Registry of GUI apps the agent may launch via the `launch_app` tool (phone command like "open notepad"). This is the ONLY source of launcher strings — raw LLM output never reaches `launch_app` (SECURITY.md rule 4).
@@ -107,6 +120,10 @@ streams:                        # Track A3: read via load_streams_config with cu
   pending_ttl_seconds: 300      # unactioned consent request TTL
   grant_ttl_seconds: 900        # approved grant TTL (15 min)
   max_consent_records: 256      # hard cap on consent records
+ops:                            # Track B3: destructive-op consent queue (own TTLs/bounds, separate scope)
+  pending_ttl_seconds: 300      # unactioned op request TTL
+  grant_ttl_seconds: 600        # approved op grant TTL (10 min)
+  max_consent_records: 256      # hard cap on op records
 tls:                            # paths read by scripts/serve.ps1 (+ written by gen_cert.py --out-dir); not by server/ loaders
   cert_path: "certs/dev-cert.pem"  # serve.ps1 falls back to certs\dev-cert.pem when absent
   key_path: "certs/dev-key.pem"    # serve.ps1 falls back to certs\dev-key.pem when absent

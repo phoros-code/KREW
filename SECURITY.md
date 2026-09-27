@@ -73,6 +73,35 @@ Explicit, un-skippable prompts before:
 - Any file operation outside a normal read/write in the workspace (delete, overwrite outside workspace, anything the denylist would otherwise catch)
 - Any shell command not already in the allowlist, if you choose to support an "ask me" fallback rather than a hard block
 
+### Destructive-op consent (Track B3)
+
+Plans that reach shell/files tools pause fail-closed on two destructive
+shapes instead of executing or silently erroring:
+
+- **Non-allowlisted shell** (not in `tools.yaml` allowlist, denylisted, or
+  metachar): the step pauses with
+  `Plan rejected: destructive step needs laptop consent (B3 consent queue)`
+  plus the redacted denial reason. Approval does NOT bypass the allowlist
+  — a non-allowlisted command stays denied even when approved (the
+  allowlist is the primary model, this queue is the ask-me visibility
+  layer, not an override).
+- **Overwriting writes** (`write_file` where the workspace path already
+  exists): the step pauses; laptop approval unlocks exactly that op.
+  Fresh-file writes execute normally; jail escapes are rejected outright
+  (no consent hook — the write never happens).
+
+Mechanics: the executor computes the op identity as sha256 over the
+REDACTED step shape (the same `{length, sha256}` descriptors the phone
+sees on SSE `tool_call` events), so the phone can recompute it without
+ever seeing secrets. The queue reuses the `ConsentManager` class as a
+third instance (`ops_consent`, own `ops:` TTLs — pending 300s, grant
+600s) with a sha→consent_id index shared by server creation
+(`POST /ops/consent`, phone-token + near, idempotent per sha) and the
+orchestrator's bounded poll (~60s, then fail-closed). Approve/deny reuse
+the existing laptop-only gate (loopback or `X-Buddy-Approval`,
+phone-token-only → 403 `approval_forbidden`). Scopes never cross: a
+screen/webcam grant never authorizes an op and vice versa.
+
 ## Secrets & data handling
 
 - **No secrets in source control.** `config/security.yaml` (tokens, cert paths) is gitignored; ship a `security.yaml.example` instead.

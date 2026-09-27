@@ -26,7 +26,7 @@ Track B2 spike record (2026-09-27, Ollama `qwen2.5:3b`, throwaway script, prompt
 
 ### `buddy_core/agents/`
 - `planner.py` — Track B1: the LLM planner (`build_llm_plan`) is primary — it prompts the local model for STRICT JSON (`{"steps": [{"tool", "args"}]}`), parses defensively (first `{...}` block), and validates via `validate_plan` (allowlist + per-tool arg shapes + `max_steps` + `max_recursion_depth`). The deterministic builders (`build_research/launch/list_apps/code_plan`) are the fail-closed fallback when the LLM/parse/validation fails. `delegate` steps are schema-ready (depth+1) but execution-gated until B3. The plan is the only thing that ever reaches a tool — raw LLM text never does.
-- `coder.py`, `researcher.py`, `executor.py` — typed child agents, each scoped to one category of tool. An agent never calls a tool outside its declared category. `researcher.py` implements `run_research` (search → fetch top pages as inert data → LLM summarize, pure-function seams for tests); `orchestrator.run()` routes through it and emits the same redacted `tool_call` events as before. The executor REFUSES `delegate` steps in B1 (`Plan rejected: delegation lands in B3`).
+- `coder.py`, `researcher.py`, `executor.py` — typed child agents, each scoped to one category of tool. An agent never calls a tool outside its declared category. `researcher.py` implements `run_research` (search → fetch top pages as inert data → LLM summarize, pure-function seams for tests); `orchestrator.run()` routes through it and emits the same redacted `tool_call` events as before. Track B3: the executor runs pure shell/read/list/write plans (authoring scope per category in `AGENT_TOOL_SCOPES`); destructive steps (non-allowlisted shell, overwriting writes) pause for laptop consent via the sha-indexed ops queue (`POST /ops/*`, bounded poll, fail closed). The executor still REFUSES `delegate` steps — multi-agent delegation executes in a later track.
 
 ### `buddy_core/tools/`
 Every tool here is a narrow, testable function with an explicit allow/deny surface — see `SECURITY.md` for the full model.
@@ -39,7 +39,17 @@ Every tool here is a narrow, testable function with an explicit allow/deny surfa
 Thin glue only — `voice_loop.py` should contain no business logic, just wiring between `wake.py`, `stt.py`, `orchestrator.run()`, and `tts.py`.
 
 ### `buddy_core/memory/`
-A stub — no conversation memory is persisted yet.
+Bounded local conversation memory (Track B3 — no longer a stub).
+`MemoryStore` persists redacted agent-lifecycle summaries to a JSONL file
+(`config/tools.yaml` → `memory:`, default `logs/memory.jsonl`, cap 500
+entries, each `{ts, kind, text[:500]}`, oldest evicted first). The
+orchestrator remembers `task_started`/`task_completed` metadata only
+(truncated command, outcome, step count — tool outputs such as file
+bodies are never stored) and injects the last 5 memories into the LLM
+planner system prompt as bounded, labelled DATA context (2000 chars;
+untrusted-content rules apply). Reads tolerate missing/corrupt files;
+memory failures never break a run. See `SECURITY.md` → Secrets & data
+handling (no raw payloads) and `CONFIG.md` → `memory:`.
 
 ### `server/`
 - `main.py` — FastAPI app, all routes documented in `API.md`.

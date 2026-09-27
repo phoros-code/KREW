@@ -128,9 +128,52 @@ Consent flow (Track A3, same laptop-only approval rule as `/screen`):
 - `POST /webcam/consent/{id}/revoke` (phone-token + near) → `{"status": "revoked"}` — pulls back a live grant early; takes effect on the next frame re-check. Idempotent; 409 if the request is still pending, 404 for unknown/expired ids.
 - `GET /webcam?consent_id=…` (or `X-Consent-Id` header) → 200 MJPEG while approved; 403 `consent_required` pre-approval/unknown/cross-scope, 403 `consent_denied` after deny **or revoke**. Grants expire after 15 min.
 
+## `POST /ops/consent` (+ approve/deny)
+
+**Proximity: near only (create) / near + laptop-only (approve/deny).**
+Destructive-op consent queue (Track B3) — the ask-me gate for plan steps
+that would otherwise pause fail-closed: non-allowlisted shell commands
+and writes that would overwrite an existing workspace file. Phone app
+wiring is a later track; the contract below is what the app will use.
+
+- `POST /ops/consent` (phone-token + near) →
+  `{"consent_id": "<hex>", "status": "pending"}`
+- `POST /ops/consent/{id}/approve` (laptop-only: loopback `127.0.0.1`/`::1`
+  OR `X-Buddy-Approval` matching `auth.consent_approval_secret`;
+  phone-token-only → 403 `approval_forbidden`) → `{"status": "approved"}`
+  (409 `consent_denied` if denied)
+- `POST /ops/consent/{id}/deny` (same laptop-only rule as approve) →
+  `{"status": "denied"}` (409 `conflict` if already approved — deny does
+  not revoke)
+
+Request (strict — anything else is `400 bad_request`):
+
+```json
+{ "op": "write_file", "args_sha": "<64-hex sha256>" }
+```
+
+- `op`: non-empty string, ≤200 chars (tool name or short label).
+- `args_sha`: the executor's op identity — sha256 over the REDACTED step
+  shape (`{"tool", "args"}` with `content`/`command` bodies replaced by
+  `{length, sha256}`). The phone recomputes it from the SSE `tool_call`
+  event it already sees, so both sides converge without secrets moving.
+
+Creation is idempotent per `args_sha`: re-posting a pending (or
+already-approved) sha returns the SAME `consent_id`, so the orchestrator's
+bounded poll (~60s, then fail-closed) and the phone's request share one
+queue entry. Separate scope: a screen/webcam grant never authorizes an op
+and vice versa. Lifetimes/bounds live in the `ops:` block
+(`pending_ttl_seconds`, `grant_ttl_seconds`, `max_consent_records`).
+
+Security note: approval authorizes the destructive aspect WITHIN policy —
+it never expands the shell allowlist. A non-allowlisted command stays
+denied even when approved (the allowlist is the primary model); the
+overwrite path is the ask-me flow approval unlocks. See `SECURITY.md` →
+Consent.
+
 ## Proximity gating summary
 
-All 15 routes. Consent approve/deny additionally require the laptop-only
+All 18 routes. Consent approve/deny additionally require the laptop-only
 credential (loopback origin or `X-Buddy-Approval`), even near.
 
 | Endpoint | Near | Far |
@@ -150,6 +193,9 @@ credential (loopback origin or `X-Buddy-Approval`), even near.
 | `POST /webcam/consent/{id}/deny` | ✅ + laptop-only | ❌ |
 | `POST /webcam/consent/{id}/revoke` | ✅ (phone-gated) | ❌ |
 | `GET /webcam` | ✅ + live grant | ❌ |
+| `POST /ops/consent` | ✅ (request) | ❌ |
+| `POST /ops/consent/{id}/approve` | ✅ + laptop-only | ❌ |
+| `POST /ops/consent/{id}/deny` | ✅ + laptop-only | ❌ |
 
 If proximity can't be determined, the server defaults to **far** — see `SECURITY.md` → Authorization: proximity gating.
 
