@@ -110,12 +110,27 @@ class _PreviewScreenState extends State<PreviewScreen> {
             ),
           ),
           const SizedBox(height: BuddySpacing.s4),
-          ScreenPreview(
-            api: widget.api,
-            proximity: widget.proximity,
-            source: _source,
-            suspendSignal: widget.suspendSignal,
-          ),
+          // Track C4 rebuild scoping: the preview gate listens to the live
+          // service when available, so a BLE pulse rebuilds ONLY this +
+          // the header + calibrate — never the whole app shell.
+          // CalibrateScreen already owns an AnimatedBuilder listener.
+          if (service != null)
+            ListenableBuilder(
+              listenable: service,
+              builder: (BuildContext context, Widget? _) => ScreenPreview(
+                api: widget.api,
+                proximity: service.mode,
+                source: _source,
+                suspendSignal: widget.suspendSignal,
+              ),
+            )
+          else
+            ScreenPreview(
+              api: widget.api,
+              proximity: widget.proximity,
+              source: _source,
+              suspendSignal: widget.suspendSignal,
+            ),
           if (service != null && applied != null) ...<Widget>[
             const SizedBox(height: BuddySpacing.s4),
             Divider(color: hairline, height: 1),

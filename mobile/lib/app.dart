@@ -98,6 +98,14 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   bool _streamConnected = false;
   int _connectAttempt = 0;
 
+  /// Track C4 SSE batching: events arriving in the same microtask/frame are
+  /// folded in ONE setState. [_pendingEvents] holds arrivals since the last
+  /// flush; [_flushScheduled] guards the single scheduled microtask;
+  /// [_pendingAttempt] drops stale batches after a reconnect.
+  final List<BuddyEvent> _pendingEvents = <BuddyEvent>[];
+  bool _flushScheduled = false;
+  int _pendingAttempt = 0;
+
   /// Track C2: last announced live-region state — prevents repeat
   /// announcements on unrelated rebuilds.
   ProximityMode? _lastAnnouncedMode;
@@ -130,7 +138,12 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   }
 
   void _onProximityChanged() {
-    if (mounted) setState(() {});
+    // Track C4 rebuild scoping: NO setState here. The header (StatusHeader
+    // via ListenableBuilder in build), the chat subtitle/command bar
+    // (ListenableBuilders in ChatScreen), the preview gate (ListenableBuilder
+    // in PreviewScreen), and the calibrate section (AnimatedBuilder) all
+    // subscribe directly — a BLE pulse rebuilds ONLY those, never the whole
+    // app or the chat log list.
     // Track C2: live-region announcements on NEAR↔FAR and offline/online
     // transitions only (polite, except offline which is assertive).
     final ProximityMode mode = _proximity.mode;
@@ -261,12 +274,18 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   /// Phase 4.2: fetch mode + threshold once per pairing/boot, then start
   /// the BLE watch only when the server is in lan_plus_bluetooth AND a
   /// device id was saved. Anything missing → BLE stays off (fail closed).
+  ///
+  /// Track C4: the threshold snapshot passed to SettingsScreen is refreshed
+  /// here (one parent rebuild per config fetch — infrequent, server-driven).
+  /// Per-reading BLE pulses (updateRssi → markNear/markFar) stay scoped via
+  /// ListenableBuilders and never rebuild the shell.
   Future<void> _refreshProximityConfig() async {
     final BuddyApi? api = _api;
     if (api == null) return;
     try {
       final ProximityConfig cfg = await api.fetchProximityConfig();
       _proximity.setThreshold(cfg.rssiNearThreshold);
+      if (mounted) setState(() {});
       if (cfg.usesBluetooth) {
         await _startBleWatch();
       } else {
@@ -454,6 +473,10 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   void _connectNow() {
     _subscription?.cancel();
     _subscription = null;
+    // A new generation drops any unflushed batch from the old stream —
+    // stale frames must never land on the new connection.
+    _pendingEvents.clear();
+    _flushScheduled = false;
     final BuddyApi? api = _api;
     if (api == null) return;
     _connectAttempt++;
@@ -485,44 +508,8 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
           _armStallWatchdog(attempt);
           return;
         }
-        // Fallback title must be read BEFORE folding: completed/failed
-        // frames carry result/error, not the command text.
-        final String? taskId = event.taskId;
-        final TaskNotification? notice = TaskNotification.fromEvent(
-          event,
-          fallbackTitle: taskId == null ? null : _tasks.byId(taskId)?.title,
-        );
-        setState(() {
-          _streamConnected = true;
-          _streamError = null;
-          _events.insert(0, event);
-          if (_events.length > 200) _events.removeLast();
-          _tasks.applyEvent(event);
-          // Track C3: every task notice also lands in the bounded in-memory
-          // history (last 50) for the Tasks-tab section — popup or not.
-          if (notice != null) _history.add(notice);
-        });
-        _proximity.setOnline();
-        _armStallWatchdog(attempt);
-        // In-app notification (Phase 4.3): a floating SnackBar over the
-        // current console-column screen — no new layout shape, and it works
-        // in FAR (notifications-only) mode too. "View" jumps to the Tasks
-        // tab; the notice itself already carries the result/error summary.
-        // Track C3: gated by the Settings toggle (history still records).
-        final ScaffoldMessengerState? messenger =
-            _messengerKey.currentState;
-        if (notice != null && messenger != null && _notificationsEnabled) {
-          showTaskNotification(
-            messenger,
-            notification: notice,
-            onView: () {
-              if (mounted) setState(() => _tab = 2);
-            },
-          );
-          // Track C2: live-region announcement from the same notice path —
-          // polite except failures (assertive).
-          announceTaskNotification(notice);
-        }
+        // Track C4 batching: collect per microtask/frame, fold once.
+        _queueEvent(event, attempt);
       },
       onError: (Object err) {
         if (!mounted || attempt != _connectAttempt) return;
@@ -557,6 +544,88 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       },
       cancelOnError: false,
     );
+  }
+
+  /// Track C4 SSE batching: queue one arrival, flush the whole batch in a
+  /// single setState on the next microtask. Bursts (reconnect replay,
+  /// rapid tool calls) cost one rebuild, not N.
+  void _queueEvent(BuddyEvent event, int attempt) {
+    _pendingEvents.add(event);
+    _pendingAttempt = attempt;
+    if (_flushScheduled) return;
+    _flushScheduled = true;
+    scheduleMicrotask(_flushPendingEvents);
+  }
+
+  /// Test seam: force a synchronous flush of any queued SSE batch.
+  @visibleForTesting
+  void flushPendingEventsForTest() {
+    if (_flushScheduled) {
+      _flushPendingEvents();
+    }
+  }
+
+  void _flushPendingEvents() {
+    _flushScheduled = false;
+    if (_pendingEvents.isEmpty) return;
+    final int attempt = _pendingAttempt;
+    if (!mounted || attempt != _connectAttempt) {
+      _pendingEvents.clear();
+      return;
+    }
+    final List<BuddyEvent> batch = List<BuddyEvent>.from(_pendingEvents);
+    _pendingEvents.clear();
+    // Fallback titles must be read BEFORE folding each frame (completed /
+    // failed carry result/error, not the command text) — fold incrementally
+    // so later frames in the same batch see earlier ones, exactly as the
+    // old per-event path did.
+    final List<TaskNotification> notices = <TaskNotification>[];
+    for (final BuddyEvent event in batch) {
+      final String? taskId = event.taskId;
+      final TaskNotification? notice = TaskNotification.fromEvent(
+        event,
+        fallbackTitle: taskId == null ? null : _tasks.byId(taskId)?.title,
+      );
+      _tasks.applyEvent(event);
+      if (notice != null) notices.add(notice);
+    }
+    setState(() {
+      _streamConnected = true;
+      _streamError = null;
+      _events.insertAll(0, batch.reversed);
+      if (_events.length > 200) {
+        _events.removeRange(200, _events.length);
+      }
+      // Track C3: every task notice also lands in the bounded in-memory
+      // history (last 50) for the Tasks-tab section — popup or not.
+      for (final TaskNotification notice in notices) {
+        _history.add(notice);
+      }
+    });
+    _proximity.setOnline();
+    _armStallWatchdog(attempt);
+    // In-app notification (Phase 4.3): a floating SnackBar over the current
+    // console-column screen — no new layout shape, and it works in FAR
+    // (notifications-only) mode too. "View" jumps to the Tasks tab; the
+    // notice itself already carries the result/error summary.
+    // Track C3: gated by the Settings toggle (history still records).
+    // Track C4: capped (removeCurrentSnackBar) + deduped (10s) inside
+    // showTaskNotification; announce path unchanged.
+    final ScaffoldMessengerState? messenger = _messengerKey.currentState;
+    for (final TaskNotification notice in notices) {
+      if (messenger != null && _notificationsEnabled) {
+        showTaskNotification(
+          messenger,
+          notification: notice,
+          onView: () {
+            if (mounted) setState(() => _tab = 2);
+          },
+        );
+        // Track C2: live-region announcement from the same notice path —
+        // polite except failures (assertive).
+        announceTaskNotification(notice);
+      }
+    }
   }
 
   /// Shared stream-down path (Track A5.8): error state + backed-off
@@ -760,11 +829,23 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
           : Stack(
               children: <Widget>[
                 Scaffold(
-                  appBar: StatusHeader(
-                    proximity: _proximity.mode,
-                    connection: _proximity.connection,
-                    runningCount: _tasks.runningCount,
-                    farReason: _proximity.bleCause,
+                  // Track C4 rebuild scoping: the 56px header subscribes
+                  // directly to ProximityService — BLE pulses rebuild ONLY
+                  // this (plus chat subtitle/bar, preview gate, and
+                  // calibrate via their own listeners), never the whole
+                  // IndexedStack or the chat log.
+                  appBar: PreferredSize(
+                    preferredSize: const Size.fromHeight(56),
+                    child: ListenableBuilder(
+                      listenable: _proximity,
+                      builder: (BuildContext context, Widget? _) =>
+                          StatusHeader(
+                            proximity: _proximity.mode,
+                            connection: _proximity.connection,
+                            runningCount: _tasks.runningCount,
+                            farReason: _proximity.bleCause,
+                          ),
+                    ),
                   ),
                   body: IndexedStack(
                     index: _tab,
@@ -818,6 +899,12 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                   ),
                   // Track C3: the old Pair-tab unpair strip is gone — unpair
                   // is a single destructive path in Settings.
+                  //
+                  // Track C4.7 fixed-height slot: verified — no conditional
+                  // strip remains above the nav bar (C3 moved unpair into
+                  // Settings; onboarding is a Positioned.fill overlay), so
+                  // pair/unpair never shifts the NavigationBar and no
+                  // fixed-height slot is needed. Skipped with this note.
                   //
                   // Track C1: M3 NavigationBar (not M2 BottomNavigationBar).
                   // 5 destinations + labels + behavior identical; styling
