@@ -247,7 +247,151 @@ def test_hop_limit_exceeded_fails_closed(monkeypatch) -> None:
     assert len(requested) == web_search.MAX_REDIRECT_HOPS
 
 
-# --- 6. SHOULD-06 task_started bound ---
+# --- 6. Review follow-ups: token-change reload semantics ---
+
+
+def test_external_rotate_recovers_after_idle(tmp_path) -> None:
+    """Idle-expired server + CLI rotation → new token works (fresh window)."""
+    from datetime import timedelta
+
+    sec = tmp_path / "security.yaml"
+    _security(sec)
+    app = create_app(security_path=sec, event_log=tmp_path / "events.jsonl")
+    client = TestClient(app)
+    assert client.get("/proximity", headers=_auth()).status_code == 200
+    state = app.state.auth_state
+    # Age the idle clock 2h (limit 60m) → idle_expired.
+    state.last_activity = state.now() - timedelta(hours=2)
+    assert client.get("/proximity", headers=_auth()).status_code == 401
+    # External operator rotation (separate object, like the CLI).
+    new_token = AuthState(settings=load_auth_settings(sec)).rotate(sec)
+    # New token recovers: fresh idle window, 200.
+    resp = client.get("/proximity", headers=_auth(new_token))
+    assert resp.status_code == 200
+    assert state.last_activity is not None
+
+
+def test_same_token_reload_preserves_lockout_and_activity(tmp_path) -> None:
+    """A config touch (same token) must not amnesty lockouts or idle."""
+    sec = tmp_path / "security.yaml"
+    _security(sec)
+    app = create_app(security_path=sec, event_log=tmp_path / "events.jsonl")
+    client = TestClient(app)
+    state = app.state.auth_state
+    for n in range(5):
+        client.get("/proximity", headers=_auth(f"bad-{n}"))
+    assert state.is_locked("testclient") is True
+    before_activity = state.last_activity
+    # Same-token file touch (threshold-style edit by another writer).
+    import os as _os
+    import time as _time
+
+    doc = yaml.safe_load(sec.read_text(encoding="utf-8"))
+    doc.setdefault("proximity", {})["rssi_near_threshold"] = -65
+    sec.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    _os.utime(sec, ns=(sec.stat().st_atime_ns, _time.time_ns() + 5_000_000))
+    state.maybe_reload()
+    assert state.is_locked("testclient") is True
+    assert state.last_activity == before_activity
+    assert state.settings.token == TOKEN
+
+
+def test_reload_mid_load_write_converges(tmp_path, monkeypatch) -> None:
+    """A second write landing mid-load is picked up (bounded re-read)."""
+    import server.auth as auth_mod
+
+    sec = tmp_path / "security.yaml"
+    _security(sec)
+    app = create_app(security_path=sec, event_log=tmp_path / "events.jsonl")
+    state = app.state.auth_state
+    real_load = auth_mod.load_auth_settings
+    calls = {"n": 0}
+
+    def flipping_load(path):
+        settings = real_load(path)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            doc = yaml.safe_load(sec.read_text(encoding="utf-8"))
+            doc["auth"]["token"] = "token-v3"
+            sec.write_text(yaml.safe_dump(doc), encoding="utf-8")
+        return settings
+
+    monkeypatch.setattr(auth_mod, "load_auth_settings", flipping_load)
+    doc = yaml.safe_load(sec.read_text(encoding="utf-8"))
+    doc["auth"]["token"] = "token-v2"
+    sec.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    state.maybe_reload()
+    assert calls["n"] == 2  # second write detected, reloaded once more
+    assert state.settings.token == "token-v3"
+    # Token changed across the reload → fresh window + cleared lockouts.
+    assert state.last_activity is None
+
+
+# --- 7. Review follow-up: search backends pinned ---
+
+
+def test_searxng_private_url_blocked() -> None:
+    """Operator-misconfigured SearXNG pointing at loopback fails closed."""
+    from buddy_core.config import WebSearchConfig
+
+    with pytest.raises(ValueError, match="[Nn]on-public|Blocked"):
+        web_search.search(
+            "hello",
+            WebSearchConfig(backend="searxng", searxng_url="http://127.0.0.1:8080/"),
+        )
+
+
+def test_search_redirect_drops_post_body(monkeypatch) -> None:
+    """A redirect off the DDG POST continues as bodyless GET (no forwarding)."""
+    import socket as _socket
+
+    seen: list[tuple[str, dict]] = []
+
+    class _Resp:
+        def __init__(self, url: str, status: int = 200, location: str | None = None):
+            self._url = url
+            self.status_code = status
+            self.headers = {"location": location} if location else {}
+            self.encoding = "utf-8"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def raise_for_status(self) -> None:
+            pass
+
+        @property
+        def url(self):
+            return httpx.URL(self._url)
+
+        def iter_bytes(self, chunk_size: int = 65536):
+            yield b"<html></html>"
+
+    def fake_stream(method, url, **kwargs):
+        seen.append((method, dict(kwargs)))
+        if len(seen) == 1:
+            return _Resp(str(url), status=302, location="https://public.example/next")
+        return _Resp(str(url), status=200)
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda host, port, *a, **k: [
+            (_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
+        ],
+    )
+    body, final_url, _, _ = web_search._request_with_redirects(
+        "POST", "https://public.example/start", data={"q": "x"}
+    )
+    assert final_url == "https://public.example/next"
+    assert seen[0][0] == "POST" and seen[0][1].get("data") == {"q": "x"}
+    assert seen[1][0] == "GET" and "data" not in seen[1][1]
+
+
+# --- 8. SHOULD-06 task_started bound ---
 
 
 def test_task_started_truncated_200(tmp_path, monkeypatch) -> None:
