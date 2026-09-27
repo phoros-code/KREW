@@ -65,6 +65,33 @@ Response:
 { "task_id": "b7e1...", "status": "queued" }
 ```
 
+## `POST /voice/transcribe`
+
+**Proximity: near only.**
+
+Transcribes a short push-to-talk clip via faster-whisper on the laptop
+(Track B4 server half — the phone records, the laptop decodes).
+
+Request (multipart form, single `audio` file field — `wav`/`m4a`/`mp3`/`webm`,
+max 5MB):
+
+```json
+{ "text": "what's on my calendar today", "confidence": 0.92, "duration_seconds": 2.1 }
+```
+
+- Missing `audio` field or disallowed type (neither the filename extension
+  nor the content-type is an audio type) → `400 bad_request`.
+- Over 5MB → `413 body_too_large`.
+- faster-whisper not installed on the laptop → `501 not_implemented`
+  (lazy import; never a 500 traceback).
+- Empty/inaudible audio → `200` with the silence shape
+  (`{"text": "", "confidence": 0.0, ...}`) — the CLIENT decides to retry,
+  matching the `voice_loop` `MIN_CONFIDENCE` pattern; silence is never a 4xx.
+
+The upload lands in an ephemeral `TemporaryDirectory` and is deleted after
+the request — audio is never persisted (see `SECURITY.md`). The endpoint
+emits no events, so transcripts never touch `logs/events.jsonl`.
+
 ## `GET /events` (SSE)
 
 **Proximity: near or far.** This is the one endpoint "far" mode still gets — notifications only, no control.
@@ -173,7 +200,7 @@ Consent.
 
 ## Proximity gating summary
 
-All 18 routes. Consent approve/deny additionally require the laptop-only
+All 19 routes. Consent approve/deny additionally require the laptop-only
 credential (loopback origin or `X-Buddy-Approval`), even near.
 
 | Endpoint | Near | Far |
@@ -182,6 +209,7 @@ credential (loopback origin or `X-Buddy-Approval`), even near.
 | `GET /proximity` | ✅ | ✅ (read-only, by design) |
 | `GET /events` | ✅ | ✅ (notifications only) |
 | `POST /command` | ✅ | ❌ |
+| `POST /voice/transcribe` | ✅ | ❌ |
 | `POST /proximity/threshold` | ✅ | ❌ |
 | `POST /screen/consent` | ✅ (request) | ❌ |
 | `POST /screen/consent/{id}/approve` | ✅ + laptop-only | ❌ |

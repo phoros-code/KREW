@@ -114,6 +114,21 @@ abstract final class AppStrings {
   static const String chatEventDone = 'Task done';
   static const String chatEventFailed = 'Task failed';
 
+  // Track B4: phone-side voice input (mic → /voice/transcribe → review → send).
+  static const String voiceMicLabel = 'Record voice command';
+  static const String voiceRecordingLabel = 'Recording voice command';
+  static const String voiceStop = 'Stop';
+  static const String voiceTranscribing = 'Transcribing…';
+  static const String voiceEmptyRetry = "Didn't catch that — try again";
+  static const String voiceNotImplemented =
+      "Voice transcription isn't set up on the laptop yet";
+  static const String voicePermissionDenied =
+      'Microphone permission denied — enable it in Settings to use voice commands.';
+  static const String voiceTooLarge =
+      'That recording is too large to send — try a shorter command.';
+  static const String voiceStartFailed =
+      'Could not start recording — try again.';
+
   // Task list screen.
   static const String tasksTitle = 'Tasks';
   static const String tasksSubtitle =
@@ -271,6 +286,15 @@ abstract final class AppStrings {
     chatEventStarted,
     chatEventDone,
     chatEventFailed,
+    voiceMicLabel,
+    voiceRecordingLabel,
+    voiceStop,
+    voiceTranscribing,
+    voiceEmptyRetry,
+    voiceNotImplemented,
+    voicePermissionDenied,
+    voiceTooLarge,
+    voiceStartFailed,
     tasksTitle,
     tasksSubtitle,
     tasksErrorTitle,

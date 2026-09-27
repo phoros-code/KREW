@@ -19,6 +19,7 @@ dependencies:
   intl: ^0.20.2 # flutter_localizations pin (Track C3 i18n scaffold)
   flutter_localizations: # Track C3 i18n scaffold (English only)
     sdk: flutter
+  record: ^6.0.0 # Phone mic capture for voice commands (Track B4)
 
 dev_dependencies:
   flutter_test:

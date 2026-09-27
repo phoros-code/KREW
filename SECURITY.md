@@ -107,6 +107,7 @@ screen/webcam grant never authorizes an op and vice versa.
 - **No secrets in source control.** `config/security.yaml` (tokens, cert paths) is gitignored; ship a `security.yaml.example` instead.
 - **Inference, agents, data, and telemetry stay local.** No telemetry, no analytics calls, no crash reporting that phones home by default — if you ever add any, it must be opt-in and disclosed in `README.md`. FCM background push is not implemented in v0.1.0; if ever added it would be the one exception — see Known limitations.
 - **Screen/webcam frames are not persisted** beyond what's needed to stream them live — don't accidentally build a rolling video archive of your own screen.
+- **Voice clips are never persisted** — `POST /voice/transcribe` decodes the upload from an ephemeral `TemporaryDirectory` (deleted after each request) and emits no events, so transcripts never touch `logs/events.jsonl` either.
 - **Event logs (`logs/events.jsonl`)** should log what the agent did, not raw sensitive payloads — avoid dumping full file contents or screen frames into the log. `task_started` command text is truncated to 200 chars (same bound as the empty-command path) to bound log growth and sensitive-payload retention.
 
 ## Dependency hygiene

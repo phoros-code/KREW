@@ -9,11 +9,11 @@
 	<!-- LAN HTTPS to the laptop control server (direct IP entry, no discovery). -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Everyday Buddy connects to your laptop on the local network to send commands and receive task updates.</string>
+	<!-- Track B4 phone voice input: mic capture for voice commands. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Everyday Buddy uses the microphone to record voice commands for transcription on your laptop. Recording starts only when you tap the mic button and stops when you tap Stop, cancel, or leave the app.</string>
 	<!-- No NSBonjourServices: the app takes a direct IP on the pair screen and
-	     does NO mDNS/Bonjour discovery, so no browsed service strings are needed.
-	     NOTE (Track B4 phone-voice): do NOT add NSMicrophoneUsageDescription
-	     until the phone-voice feature lands — an unused mic key triggers
-	     App Store review questions. -->
+	     does NO mDNS/Bonjour discovery, so no browsed service strings are needed. -->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>

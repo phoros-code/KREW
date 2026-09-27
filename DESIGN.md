@@ -61,7 +61,7 @@ Every status dot/badge in this app must have an entry here. If it's not in this 
 | connection online | success `#3A8B5C` + text label "ONLINE" | Route to laptop alive | status header |
 | connection connecting | warning `#D9932A` + text label | Opening live stream | status header |
 | header task summary | primary `#1E5F4A` + count text ("N RUNNING" / "IDLE") | N tasks active vs idle | status header |
-| listening | accent `#E8A33D` pulsing with audio level | Mic recording after wake word | chat/voice UI |
+| listening | accent `#E8A33D` level meter driven by live amplitude | Phone mic recording a voice command (B4 live) | chat command bar |
 
 ---
 

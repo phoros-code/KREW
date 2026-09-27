@@ -64,6 +64,14 @@ String get previewEndedMessage => 'Preview ended';
 String get previewDeniedMessage =>
     'Preview request denied by the laptop';
 
+/// Voice recording started announcement (polite, Track B4).
+String get voiceRecordingStartedMessage =>
+    'Recording voice command. Tap Stop when done.';
+
+/// Voice transcription ready-for-review announcement (polite, Track B4).
+String get voiceTranscriptionReadyMessage =>
+    'Voice command transcribed and ready for review.';
+
 /// Thin engine wrapper: posts [message] as a live-region announcement.
 /// Failures are swallowed — announcements must never break UI. In tests pass
 /// [announceForTest] to capture instead of touching the engine channel.
@@ -122,6 +130,22 @@ void announceTaskNotification(
   announceLiveRegion(
     taskAnnounceMessage(notification),
     assertive: taskIsAssertive(notification),
+    announceForTest: announceForTest,
+  );
+}
+
+/// Convenience: announce voice recording start (polite, Track B4).
+void announceVoiceRecording({AnnounceFn? announceForTest}) {
+  announceLiveRegion(
+    voiceRecordingStartedMessage,
+    announceForTest: announceForTest,
+  );
+}
+
+/// Convenience: announce transcription ready for review (polite, Track B4).
+void announceVoiceReady({AnnounceFn? announceForTest}) {
+  announceLiveRegion(
+    voiceTranscriptionReadyMessage,
     announceForTest: announceForTest,
   );
 }
