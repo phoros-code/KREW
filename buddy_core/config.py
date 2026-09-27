@@ -38,6 +38,10 @@ class ModelsConfig:
     # Fast model for the voice loop (latency-sensitive). Text/API requests
     # default to target_model (quality); voice requests default here.
     voice_model: str = "qwen2.5:3b"
+    # Agent framework (Track B2 decision gate): "direct" (default — plain
+    # ollama.Client calls) or "crewai" (CrewAI crew summarizes research;
+    # every other route stays direct). Unknown values fail closed to direct.
+    framework: str = "direct"
     # Wake-word routing. stand_in is the openWakeWord pre-trained name used
     # until the custom model file exists; custom_model is its repo-relative
     # path; threshold is the detection score cutoff.
@@ -92,13 +96,21 @@ class ToolsConfig:
 def load_models_config(path: str | Path | None = None) -> ModelsConfig:
     data = _load_yaml(Path(path).name if path else "models.yaml")
     ollama = data.get("ollama", data)
+    agents = data.get("agents") or {}  # missing section -> direct (backwards compat)
     wake = data.get("wake") or {}  # missing section -> defaults (backwards compat)
+    raw_framework = agents.get("framework", ModelsConfig.framework)
+    framework = str(raw_framework or "").strip().lower()
+    if framework != "crewai":
+        # Fail closed: only the exact opt-in enables CrewAI; typos,
+        # blanks, and legacy configs without the section stay direct.
+        framework = "direct"
     return ModelsConfig(
         host=ollama.get("host", ModelsConfig.host),
         dev_model=ollama.get("dev_model", ModelsConfig.dev_model),
         target_model=ollama.get("target_model", ModelsConfig.target_model),
         fallback_model=ollama.get("fallback_model", ModelsConfig.fallback_model),
         voice_model=ollama.get("voice_model", ModelsConfig.voice_model),
+        framework=framework,
         wake_stand_in=wake.get("stand_in", ModelsConfig.wake_stand_in),
         wake_custom_model=wake.get("custom_model", ModelsConfig.wake_custom_model),
         wake_threshold=float(wake.get("threshold", ModelsConfig.wake_threshold)),

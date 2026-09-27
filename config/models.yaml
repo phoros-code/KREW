@@ -8,3 +8,5 @@ wake:
   stand_in: "alexa"
   custom_model: "voice/models/maxy.onnx"
   threshold: 0.5
+agents:
+  framework: "direct"  # "direct" (default) or "crewai" — crew only summarizes research; all other routes stay direct

@@ -9,9 +9,16 @@ free-form commands; the deterministic builders (launch/list/code/research)
 are the fail-closed fallback. Research execution lives in
 ``agents/researcher.py`` (``run_research``) — this file only owns routing,
 event emission (with ``planner``: "llm"|"fallback" on completion events),
-and model routing. CrewAI wiring lands later — the typed-plan boundary
-here is exactly what CrewAI tasks will consume, so nothing above this file
-changes when that swap happens.
+and model routing.
+
+Track B2 (CrewAI decision gate, wired 2026-09-27): when
+``agents.framework == "crewai"`` in config/models.yaml AND the command
+routes to research, the research SUMMARY step runs through a bounded
+CrewAI crew (``agents/crew.py`` — planner+researcher, no tools); planning,
+validation, redaction, and events are unchanged. Every other route
+(launch/list/code/executor) and the default (framework=direct) stay on
+direct Ollama calls — the typed-plan boundary here is unchanged, so
+nothing above this file changes either way.
 """
 
 from __future__ import annotations
@@ -267,6 +274,11 @@ def _run_research(
     injectable wrappers that emit the SAME redacted ``tool_call`` events
     as the old inlined flow (web_search with query+max_results, fetch_page
     with url). Completion events carry ``planner`` ("llm"|"fallback").
+
+    Track B2: when ``models.framework == "crewai"``, the summarize step
+    runs through ``agents/crew.py`` (bounded planner+researcher crew, no
+    tools) using the SAME picked model; search/fetch/validation/events
+    are unchanged. Any crew error fail-closes to task_failed below.
     """
     import ollama
 
@@ -307,7 +319,17 @@ def _run_research(
 
         def llm_summarize(query: str, context: str):
             nonlocal steps_taken
-            out = _summarize_with_llm(client, model, query, context)
+            # Track B2: crew summarizes ONLY on the research route with the
+            # framework opt-in. Planning above, validate_plan below,
+            # redacted tool_call events, and truncated task_completed are
+            # identical on both branches — the crew's text never reaches a
+            # tool, and the log only ever sees output[:2000].
+            if getattr(models, "framework", "direct") == "crewai":
+                from buddy_core.agents import crew as crew_agent
+
+                out = crew_agent.summarize_with_crew(query, context, models.host, model)
+            else:
+                out = _summarize_with_llm(client, model, query, context)
             steps_taken += 1
             return out
 
