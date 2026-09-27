@@ -37,22 +37,19 @@ Repo: `pip install -e .[voice]` provides `openwakeword`, `faster-whisper`, `pipe
 
 - [x] 1.1 Install voice extras (user-confirmed done 2026-09-26) (prefer `venv312`), from the repo root:
   `.\venv312\Scripts\python.exe -m pip install -e .[voice]`
-  PASS: pip completes with no errors; `.\venv312\Scripts\python.exe -c "import openwakeword, faster_whisper, piper, pyaudio; print('voice deps ok')"` prints `voice deps ok`. **[UNVERIFIED — not in repo]**: the exact import names for the smoke check; if one name fails, re-run pip and continue — the procedure below is the real test.
+  PASS: pip completes with no errors; `.\venv312\Scripts\python.exe -c "import openwakeword, faster_whisper, piper, pyaudio; print('voice deps ok')"` prints `voice deps ok`. (Import names verified in `venv312`: `openwakeword`, `faster_whisper`, `piper`, `pyaudio` — all importable after `pip install -e .[voice]`.)
 - [x] 1.2 Download the repo's default Piper voice (user-confirmed done 2026-09-26) into `voice\models\` (both files, side by side):
-  `New-Item -ItemType Directory -Path voice\models -Force | Out-Null;`
-  `Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx" -OutFile "voice\models\en_US-lessac-medium.onnx";`
-  `Invoke-WebRequest -Uri "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json" -OutFile "voice\models\en_US-lessac-medium.onnx.json";`
-  `Get-ChildItem voice\models\en_US-lessac-medium.onnx*`
-  PASS: both files exist and are non-empty (tens of MB `.onnx` + small `.json`). **[UNVERIFIED — not in repo]**: the `.onnx.json` URL is inferred (repo comment gives only the `.onnx` URL plus "the matching .onnx.json config beside it"); if the second download 404s, open the folder page `https://huggingface.co/rhasspy/piper-voices/tree/main/en/en_US/lessac/medium` in a browser and download the matching `.onnx.json` by hand.
-- [x] 1.3 Mic check. (user-confirmed done 2026-09-26) **[UNVERIFIED — not in repo]**: the repo has no mic-check command — this step is OS procedure only. Windows Settings → System → Sound → Input: confirm your microphone appears and the input-level bar moves when you speak. Then in PowerShell:
-  `.\venv312\Scripts\python.exe -c "import pyaudio; a=pyaudio.PyAudio(); print('inputs:', [a.get_device_info_by_index(i)['name'] for i in range(a.get_device_count()) if a.get_device_info_by_index(i)['maxInputChannels']>0]); a.terminate()"`
-  PASS: at least one input device name prints. If the list is empty, fix Windows mic privacy (Settings → Privacy → Microphone → allow desktop apps) and retry.
+  `.\venv312\Scripts\python.exe scripts\download_voice_models.py`
+  PASS: prints `PASS: en_US-lessac-medium ready in voice\models\ (.onnx + .onnx.json side by side)`; `Get-ChildItem voice\models\en_US-lessac-medium.onnx*` shows both files non-empty (tens of MB `.onnx` + small `.json`). Re-run with `--force` to re-fetch.
+- [x] 1.3 Mic check. (user-confirmed done 2026-09-26)
+  `.\venv312\Scripts\python.exe scripts\mic_check.py`
+  PASS: prints `Found N input device(s)` with names, then `PASS: mic is capturing audio` with an RMS level in the hundreds/thousands. Windows fallback (no inputs listed): Settings → System → Sound → Input (confirm the level bar moves) + Settings → Privacy → Microphone → allow desktop apps, then retry. `scripts\mic_check.py --list-only` lists devices without recording; `--device-index N` tests a specific one.
 - [x] 1.4 Wake-word test: (user-confirmed done 2026-09-26)
-  `.\venv312\Scripts\python.exe -m voice.wake`
+  `.\venv312\Scripts\python.exe -m voice.wake` (entry point: `voice/wake.py:main()`)
   Say the wake word out loud (the cue the code listens for is `hey_buddy` — say "hey buddy" clearly toward the mic, normal room, ~1 m distance).
   PASS: terminal prints `WAKE DETECTED` within the 120 s window and exits 0. FAIL = `timed out, no wake word heard` (exit 1): move closer, reduce background noise/TV, confirm the mic from 1.3 is the Windows default, retry.
 - [x] 1.5 Full loop test (needs Ollama from prerequisite 0.3 + speakers on): (user-confirmed done 2026-09-26)
-  `.\venv312\Scripts\python.exe -m voice.voice_loop` **[UNVERIFIED — not in repo]**: the exact `-m voice.voice_loop` invocation is implied by `voice/voice_loop.py:main()` ("Run the always-on loop"), not spelled out in the repo.
+  `.\venv312\Scripts\python.exe -m voice.voice_loop` (entry point: `voice/voice_loop.py:main()`, "Run the always-on loop").
   Flow: say "hey buddy", wait for the record window (6 s per `RECORD_SECONDS`), speak one command (e.g. "what time is it"), then listen.
   PASS (what "pass" sounds like): you HEAR a spoken reply through the speakers (a real answer, or the designed fallbacks `Sorry, I didn't catch that.` / `Sorry, something went wrong handling that.`), AND the terminal prints `buddy: <reply text>`. A fallback reply still PASSES the audio path (mic→STT→orchestrator→TTS→speakers); silence, a traceback, or a hang FAILS. Ctrl+C stops the loop.
 
@@ -80,7 +77,13 @@ Repo: `pip install -e .[voice]` provides `openwakeword`, `faster-whisper`, `pipe
 
 Goal: pick `rssi_near_threshold` (dBm) for YOUR hardware. Repo default is `-60`; `TESTING.md` says thresholds need per-hardware calibration, not a fixed number.
 
-- [ ] 3.1 Read the laptop's Bluetooth id in OS settings. **[UNVERIFIED — not in repo]**: the repo says only "Find the ID in the laptop OS Bluetooth settings; the laptop must stay discoverable or paired" — the exact path below is Windows procedure. Windows 11: Settings → Bluetooth & devices → Devices → (your laptop's own adapter / paired-device details) and copy the address. Android testers copy the `AA:BB:CC:DD:EE:FF` MAC; iPhone testers copy the UUID-style id iOS shows. The laptop must stay discoverable (or paired with the phone) or the phone sees no advertisements.
+- [ ] 3.1 Read the laptop's Bluetooth id. The laptop must stay discoverable (or paired with the phone) or the phone sees no advertisements.
+  - Windows 11 (exact, scriptable): in PowerShell run
+    `Get-NetAdapter | Where-Object { $_.InterfaceDescription -match 'Bluetooth' } | Select-Object Name, MacAddress`
+    and copy the `MacAddress` (`AA-BB-CC-DD-EE-FF` — the app matches case-insensitively, `-` or `:` both fine). Fallback: Device Manager → Bluetooth → your adapter → Properties → Advanced tab → Bluetooth Device Address.
+  - Android testers paste that same laptop MAC into the app field.
+  - iOS does not expose peripheral MACs: iPhone testers read the laptop's peripheral UUID with a free BLE-scanner app (e.g. LightBlue — scan, find the laptop name, copy the UUID) and paste the UUID instead.
+  - Ground truth is the §3.3 walk test, not the copied string: if the pill flips NEAR↔FAR at the right distances, the id is correct regardless of format.
 - [ ] 3.2 Enter it on the phone: open the app → Pair tab → `Laptop Bluetooth ID (optional)` field (hint text: `AA:BB:CC:DD:EE:FF (Android) or UUID (iOS)`) → type the id exactly (case-insensitive match, but copy it verbatim) → `Test connection and save`. Blank disables the BLE watch (proximity then follows server responses only).
   PASS: pairing validates and saves; the app's `GET /proximity` fetch applies the server threshold. (App wiring: BLE watch starts only when server `mode` is `lan_plus_bluetooth` AND an id is saved — otherwise it stays off, fail-closed.)
 - [ ] 3.3 Walk-away / walk-back protocol (needs `proximity.mode: "lan_plus_bluetooth"` in `config/security.yaml` — set it and restart `serve.ps1` if it still says `lan_only`):
