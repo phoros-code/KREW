@@ -114,6 +114,29 @@ MAX_COMMAND_CHARS = 2000
 # run concurrently; the N+1th request gets 503 busy (non-blocking acquire).
 MAX_COMMAND_INFLIGHT = 4
 
+# POST /voice/transcribe upload bound (Track B4): phone push-to-talk clips.
+# Oversize payloads fail closed with 413 before they reach STT.
+MAX_VOICE_AUDIO_BYTES = 5 * 1024 * 1024
+# Phone recorders vary in MIME labelling, so the gate accepts on EITHER the
+# filename extension or the content type — a clip is rejected (400) only
+# when both are outside these sets.
+_VOICE_ALLOWED_EXTS = frozenset({".wav", ".m4a", ".mp3", ".webm"})
+_VOICE_ALLOWED_CONTENT_TYPES = frozenset(
+    {
+        "audio/wav",
+        "audio/x-wav",
+        "audio/wave",
+        "audio/vnd.wave",
+        "audio/mpeg",
+        "audio/mp3",
+        "audio/mp4",
+        "audio/x-m4a",
+        "audio/m4a",
+        "audio/webm",
+        "video/webm",
+    }
+)
+
 
 def load_proximity_config(path: str | Path = SECURITY_PATH) -> dict:
     path = Path(path)
@@ -1355,6 +1378,111 @@ def create_app(
         if status is None:
             raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
         raise _http_error(409, {"error": {"code": "conflict", "message": "Consent already approved"}})
+
+    @app.post("/voice/transcribe")
+    async def voice_transcribe(request: Request, _auth: AuthState = Depends(require_near)) -> dict:
+        """Transcribe a short push-to-talk clip (near-only, Track B4).
+
+        Multipart form with a single ``audio`` file field (wav/m4a/mp3/webm,
+        max 5MB). Returns ``{"text", "confidence" (0..1), "duration_seconds"}``.
+        Empty/inaudible audio returns the silence shape with 200 (``text`` is
+        ``""``, ``confidence`` 0.0) — the CLIENT decides to retry, matching
+        the voice_loop MIN_CONFIDENCE pattern; silence is never a 4xx.
+
+        Transcription runs via voice/stt.py in asyncio.to_thread (STT blocks;
+        never block the event loop). The upload lands in an ephemeral
+        TemporaryDirectory and is deleted on exit — audio is never persisted
+        (SECURITY.md). The endpoint itself emits no events, so transcripts
+        never touch logs/events.jsonl. When faster-whisper is not installed
+        the lazy import raises a clear RuntimeError, mapped here to 501
+        ``not_implemented`` (never a 500 traceback).
+        """
+        try:
+            form = await request.form()
+        except Exception:
+            raise _http_error(
+                400,
+                {"error": {"code": "bad_request", "message": "Missing 'audio' file field"}},
+            ) from None
+        audio = form.get("audio")
+        # Duck-typed (not isinstance): request.form() yields Starlette's
+        # UploadFile while dependency-injected params yield FastAPI's — the
+        # two are distinct classes on this pin, so a class check would
+        # misfire on a real upload. A file field is anything with a
+        # filename + readable body; plain text fields are str.
+        if (
+            audio is None
+            or isinstance(audio, str)
+            or not hasattr(audio, "filename")
+            or not hasattr(audio, "read")
+        ):
+            raise _http_error(
+                400,
+                {"error": {"code": "bad_request", "message": "Missing 'audio' file field"}},
+            )
+        filename = (audio.filename or "").strip()
+        ext = Path(filename).suffix.lower()
+        ctype = (audio.content_type or "").lower().split(";")[0].strip()
+        if ext not in _VOICE_ALLOWED_EXTS and ctype not in _VOICE_ALLOWED_CONTENT_TYPES:
+            raise _http_error(
+                400,
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "audio must be wav/m4a/mp3/webm (filename or content-type)",
+                    }
+                },
+            )
+        try:
+            data = await audio.read()
+        except Exception:
+            raise _http_error(
+                400,
+                {"error": {"code": "bad_request", "message": "Could not read 'audio' upload"}},
+            ) from None
+        finally:
+            try:
+                await audio.close()
+            except Exception:
+                pass
+        if len(data) > MAX_VOICE_AUDIO_BYTES:
+            raise _http_error(
+                413,
+                {"error": {"code": "body_too_large", "message": "audio exceeds 5MB"}},
+            )
+        if not data:
+            # Zero-byte upload: nothing to decode — answer the silence shape
+            # directly (client retries, same as inaudible audio).
+            return {"text": "", "confidence": 0.0, "duration_seconds": 0.0}
+        suffix = ext if ext in _VOICE_ALLOWED_EXTS else ".wav"
+        # Ephemeral: TemporaryDirectory deletes the clip on exit (success,
+        # 4xx, or 501) — no audio persisted, ever.
+        with tempfile.TemporaryDirectory(prefix="buddy-stt-") as tmp:
+            clip = Path(tmp) / f"utterance{suffix}"
+            clip.write_bytes(data)
+            try:
+                from voice import stt as stt_mod
+
+                duration = stt_mod.audio_duration_seconds(str(clip))
+                heard = await asyncio.to_thread(stt_mod.transcribe, str(clip))
+            except (RuntimeError, ImportError) as exc:
+                msg = str(exc) or "speech-to-text backend unavailable"
+                if (
+                    isinstance(exc, ImportError)
+                    or "faster-whisper" in msg
+                    or "not installed" in msg
+                ):
+                    raise _http_error(
+                        501,
+                        {"error": {"code": "not_implemented", "message": msg}},
+                    ) from None
+                raise
+        text = heard.text or ""
+        try:
+            confidence = float(heard.confidence or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return {"text": text, "confidence": confidence, "duration_seconds": duration}
 
     return app
 
