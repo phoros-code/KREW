@@ -1,5 +1,16 @@
 # Changelog — Everyday Buddy
 
+## Unreleased (KREW remediation)
+- **CI sync**: `cryptography==50.0.1` added to `requirements.txt` (was
+  imported by tests + `gen_cert.py` but missing from the light CI set);
+  dropped the unused `sse-starlette` pin. chromadb CVEs documented as
+  accepted risk in SECURITY.md (newest crewai still pins `chromadb~=1.1.0`,
+  no fixed version published, dependency unreachable from the app surface).
+- **Setup scripts**: `scripts/mic_check.py` (list inputs + RMS capture
+  check) and `scripts/download_voice_models.py` (stdlib-only Piper fetch)
+  with 13 hermetic tests. HARDWARE_VERIFICATION §1 rewritten onto them;
+  voice entry points and per-OS Bluetooth-ID procedures documented.
+
 ## v0.2.1 (2026-09-27) — Security-review follow-ups (Track E)
 
 E1 review verdict was FAIL on rotation semantics; re-verification PASS after

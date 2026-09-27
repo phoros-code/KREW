@@ -139,3 +139,9 @@ A local-first, multi-agent AI assistant. Runs on the user's laptop, controlled f
 - E1 Security Architect review: FAIL on 1 BLOCKER (rotation didn't touch the running server) + 7 SHOULDs. Fixed all: live mtime reload, verify-first lockout, closed approval bypass, corrupt-write aborts, DNS pinning + manual redirects, task_started bound.
 - Re-verification: PASS, but raised 4 follow-ups — fixed directly in build mode: (1) idle reset only on token-change reload (config touches preserve lockouts/idle), (2) bounded mid-load re-read, (3) search backends (SearXNG/DDG) through the pinned transport with bodyless redirect GETs. 313 pytest + 260 dart.
 - Tag: v0.2.1. Remaining: hardware gates §3–§5 (human, physical devices), then Track B (capabilities → v0.3.0).
+
+## Session notes (2026-09-27, KREW remediation prompt)
+
+- P1: `cryptography==50.0.1` (venv312-verified) added to requirements.txt; dropped stale `sse-starlette` pin. chromadb: latest crewai (1.15.22) still pins `chromadb~=1.1.0`, OSV lists no fix — documented as accepted risk in SECURITY.md (transitive, unreachable, CI light set excludes it).
+- P2: `scripts/mic_check.py` (fake-pyaudio-tested list/RMS/record paths) + `scripts/download_voice_models.py` (stdlib urllib, local-HTTP-tested) + 13 tests in `tests/test_scripts.py`; HARDWARE_VERIFICATION §1.1–1.3/1.5 rewritten onto scripts, voice entry points + per-OS BT-ID procedures documented.
+- P3: zero `com.example` anywhere in mobile/ (`com.everydaybuddy` in gradle/pbxproj/Kotlin). 326 pytest + 260 dart, both analyzes clean.
