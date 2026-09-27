@@ -20,7 +20,9 @@ Both paths converge on the same `orchestrator.run()` call — the voice loop and
 ## Module responsibilities
 
 ### `buddy_core/orchestrator.py`
-Owns the single public `run(command: str) -> TaskResult` entrypoint — CrewAI is a declared dependency but is not wired in; the orchestrator makes direct Ollama calls. Nothing outside this file constructs agents directly — `voice_loop.py` and `server/main.py` both call `orchestrator.run()`, never the agents themselves.
+Owns the single public `run(command: str) -> TaskResult` entrypoint. Direct Ollama calls are the default (`agents.framework: direct` in `config/models.yaml`); when the flag is `"crewai"` AND the command routes to research, the research SUMMARY step runs through a bounded CrewAI crew (`buddy_core/agents/crew.py` — planner + researcher, no tools, same picked model) while planning, `validate_plan`, redaction, and events stay identical. Nothing outside this file constructs agents directly — `voice_loop.py` and `server/main.py` both call `orchestrator.run()`, never the agents themselves.
+
+Track B2 spike record (2026-09-27, Ollama `qwen2.5:3b`, throwaway script, prompt "summarize: ≤2 sentences on why the sky is blue", crew = 2 agents + 1 task + `max_iter=2` + no tools): direct 15.6s cold / 2.8s warm vs crew 4.3s / 3.9s (~1.5x warm — inside the 3x gate); both runs coherent English inside the 2-sentence bound; no crewai+Ollama errors. Verdict: WIRE (gated, research-summary only, default direct) — so nobody re-litigates it.
 
 ### `buddy_core/agents/`
 - `planner.py` — Track B1: the LLM planner (`build_llm_plan`) is primary — it prompts the local model for STRICT JSON (`{"steps": [{"tool", "args"}]}`), parses defensively (first `{...}` block), and validates via `validate_plan` (allowlist + per-tool arg shapes + `max_steps` + `max_recursion_depth`). The deterministic builders (`build_research/launch/list_apps/code_plan`) are the fail-closed fallback when the LLM/parse/validation fails. `delegate` steps are schema-ready (depth+1) but execution-gated until B3. The plan is the only thing that ever reaches a tool — raw LLM text never does.

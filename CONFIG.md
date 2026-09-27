@@ -11,6 +11,8 @@ ollama:
   target_model: "llama3.1:8b"  # default for text/API requests (quality)
   fallback_model: "qwen2.5:3b" # used if target_model isn't pulled yet
   voice_model: "qwen2.5:3b"    # default for voice-loop requests (latency over quality)
+agents:
+  framework: "direct"          # "direct" (default) or "crewai"
 ```
 
 **Model routing rule:** `orchestrator.run(..., source="voice")` (from
@@ -18,6 +20,19 @@ ollama:
 from `POST /command`) prefers `target_model` first. This is deliberate
 latency-vs-quality routing — not error fallback. Unpulled models fall through
 to the next candidate; nothing ever fails on a missing tag.
+
+**Framework rule (Track B2 decision gate):** `agents.framework` selects the
+research summarizer. `"direct"` (default) summarizes via a plain
+`ollama.Client` chat call; `"crewai"` summarizes via a bounded CrewAI crew
+(`buddy_core/agents/crew.py` — planner + researcher, `max_iter=2`, no tools
+on any agent or task) using the SAME picked model. The flag applies ONLY
+when the command routes to research — launch/list/code/executor paths stay
+direct either way. Planning (`build_llm_plan`), `validate_plan`, redacted
+`tool_call` events, and truncated `task_completed` results are identical on
+both branches: crew text never reaches a tool, and logs only ever see
+`output[:2000]`. Any other value (typo, blank, missing section) fails closed
+to `"direct"`. Live-smoke the crew path with `scripts/smoke_crew.py`
+(laptop-only, never run by pytest).
 
 ```yaml
 wake:
