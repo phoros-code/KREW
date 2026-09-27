@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/strings.dart';
 import '../models/buddy_event.dart';
 import '../services/buddy_api.dart';
 import '../services/proximity_service.dart';
@@ -24,6 +25,7 @@ class ChatScreen extends StatefulWidget {
     required this.streamError,
     required this.streamConnected,
     required this.onRetryStream,
+    this.onRefresh,
   });
 
   final BuddyApi? api;
@@ -33,6 +35,10 @@ class ChatScreen extends StatefulWidget {
   final String? streamError;
   final bool streamConnected;
   final VoidCallback onRetryStream;
+
+  /// Track C3 pull-to-refresh: re-runs the shell reconnect + proximity
+  /// config fetch. Null keeps the log static (tests).
+  final Future<void> Function()? onRefresh;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -87,13 +93,13 @@ class _ChatScreenState extends State<ChatScreen> {
   String _humanizeSend(BuddyApiException e) {
     switch (e.code) {
       case 'unauthorized':
-        return 'The laptop rejected the token. Re-pair from the Pair tab.';
+        return AppStrings.chatSendUnauthorized;
       case 'token_expired':
-        return 'The pairing token reached its age limit. Re-pair from the Pair tab.';
+        return AppStrings.chatSendTokenExpired;
       case 'forbidden':
-        return 'Blocked: commands need near proximity. You are on notifications-only until you move closer.';
+        return AppStrings.chatSendForbidden;
       case 'locked_out':
-        return 'The laptop locked out after too many attempts. Wait, then retry.';
+        return AppStrings.chatSendLockedOut;
       case 'unreachable':
         return e.message;
       default:
@@ -121,16 +127,17 @@ class _ChatScreenState extends State<ChatScreen> {
     final bool barEnabled = paired && widget.proximity.commandsAllowed;
 
     final String? barReason = !paired
-        ? 'Pair with the laptop first.'
+        ? AppStrings.chatBarUnpaired
         : offline
-        ? 'Laptop unreachable — commands are paused until the connection returns.'
+        ? AppStrings.chatBarOffline
         : far
-        ? 'FAR mode: notifications only. Move closer to the laptop to send commands.'
+        ? AppStrings.chatBarFar
         : widget.streamConnected
         ? null
-        : 'Connecting to the laptop…';
+        : AppStrings.chatBarConnecting;
 
     return ConsoleColumn(
+      onRefresh: widget.onRefresh,
       bottomBar: CommandBar(
         enabled: barEnabled,
         sending: _sending,
@@ -140,12 +147,12 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
-          Text('Agent log', style: Theme.of(context).textTheme.headlineSmall),
+          Text(AppStrings.chatTitle, style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: BuddySpacing.s2),
           Text(
             far
-                ? 'FAR mode — following task notifications. Commands unlock when you are near.'
-                : 'Live task activity from the laptop. Newest first.',
+                ? AppStrings.chatSubtitleFar
+                : AppStrings.chatSubtitleLive,
             style: small,
           ),
           const SizedBox(height: BuddySpacing.s4),
@@ -179,7 +186,7 @@ class _ChatScreenState extends State<ChatScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
                           Text(
-                            'Live updates paused',
+                            AppStrings.chatStreamErrorTitle,
                             style: Theme.of(context).textTheme.labelLarge
                                 ?.copyWith(
                                   color: errorText,
@@ -201,7 +208,7 @@ class _ChatScreenState extends State<ChatScreen> {
                                 tapTargetSize:
                                     MaterialTapTargetSize.padded,
                               ),
-                              child: const Text('Reconnect'),
+                              child: const Text(AppStrings.actionReconnect),
                             ),
                           ),
                         ],
@@ -251,9 +258,8 @@ class _ChatScreenState extends State<ChatScreen> {
           if (!paired)
             _EmptyState(
               icon: Icons.laptop_outlined,
-              title: 'No laptop paired yet',
-              hint:
-                  'Pair from the Pair tab — then send your first command here.',
+              title: AppStrings.chatEmptyUnpairedTitle,
+              hint: AppStrings.chatEmptyUnpairedHint,
               muted: muted,
               hairline: hairline,
             )
@@ -261,11 +267,11 @@ class _ChatScreenState extends State<ChatScreen> {
             _EmptyState(
               icon: Icons.chat_bubble_outline,
               title: widget.streamConnected
-                  ? 'No commands yet'
-                  : 'Connecting to the laptop…',
+                  ? AppStrings.chatEmptyNoCommandsTitle
+                  : AppStrings.chatEmptyConnectingTitle,
               hint: widget.streamConnected
-                  ? 'Send a command below — results stream back here as the agent works.'
-                  : 'Opening the live event stream. This usually takes a second.',
+                  ? AppStrings.chatEmptyNoCommandsHint
+                  : AppStrings.chatEmptyConnectingHint,
               muted: muted,
               hairline: hairline,
             )
@@ -338,13 +344,13 @@ class _LogRow extends StatelessWidget {
   String _eventTitle(BuddyEvent e) {
     switch (e.type) {
       case 'task_started':
-        return 'Task started';
+        return AppStrings.chatEventStarted;
       case 'tool_call':
         return 'Tool: ${e.tool ?? 'unknown'}';
       case 'task_completed':
-        return 'Task done';
+        return AppStrings.chatEventDone;
       case 'task_failed':
-        return 'Task failed';
+        return AppStrings.chatEventFailed;
       default:
         return e.type;
     }

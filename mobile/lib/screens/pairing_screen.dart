@@ -1,9 +1,34 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/strings.dart';
 import '../services/buddy_api.dart';
 import '../services/secure_store.dart';
 import '../theme/buddy_theme.dart';
 import '../widgets/console_column.dart';
+
+/// Curated pairing error copy (Track C3): maps the API.md error envelope to
+/// human guidance. Pure — unit tested.
+///
+/// Curated copy only — the raw server message/code NEVER renders inline.
+/// The code is available behind the "Details" expander; raw JSON never
+/// reaches the UI. `unreachable` passes through untouched because the
+/// BuddyApi envelopes are already curated (route vs cert).
+String curatedPairingMessage(BuddyApiException e) {
+  switch (e.code) {
+    case 'unauthorized':
+      return AppStrings.pairErrorUnauthorized;
+    case 'token_expired':
+      return AppStrings.pairErrorTokenExpired;
+    case 'locked_out':
+      return AppStrings.pairErrorLockedOut;
+    case 'unreachable':
+      return e.message;
+    case 'forbidden':
+      return AppStrings.pairErrorForbidden;
+    default:
+      return AppStrings.pairErrorGeneric;
+  }
+}
 
 /// Pairing screen: laptop IP + token entry, stored in [SecureStore].
 ///
@@ -47,6 +72,9 @@ class _PairingScreenState extends State<PairingScreen> {
   bool _obscured = true;
   String? _errorMessage;
   String? _errorCode;
+
+  /// Track C3: raw server codes stay hidden until the user opens Details.
+  bool _showDetails = false;
 
   /// Track C2: focus traversal for the pairing form + error-card focus.
   final FocusNode _hostFocus = FocusNode();
@@ -101,31 +129,31 @@ class _PairingScreenState extends State<PairingScreen> {
 
   String? _validateHost(String? value) {
     if (value == null || value.trim().isEmpty) {
-      return 'Enter the laptop IP shown by the pairing script.';
+      return AppStrings.pairHostEmpty;
     }
     // Same strict gate the client constructs with (Track A5.7): userinfo,
     // spaces, #/? remnants, and out-of-range ports fail here with form
     // copy instead of a transport error.
     if (!BuddyApi.isValidHost(value)) {
-      return 'That host does not look valid — use an IP or hostname, with an optional :port.';
+      return AppStrings.pairHostInvalid;
     }
     return null;
   }
 
   String? _validateToken(String? value) {
     if (value == null || value.trim().isEmpty) {
-      return 'Enter the pairing token from the laptop.';
+      return AppStrings.pairTokenEmpty;
     }
-    if (value.trim().length < 8) return 'That token looks too short.';
+    if (value.trim().length < 8) return AppStrings.pairTokenShort;
     return null;
   }
 
   String? _validateFingerprint(String? value) {
     if (value == null || value.trim().isEmpty) {
-      return 'Paste the cert fingerprint from the laptop pairing script.';
+      return AppStrings.pairFingerprintEmpty;
     }
     if (!BuddyApi.isValidFingerprint(value)) {
-      return 'That does not look like a SHA-256 fingerprint (64 hex chars).';
+      return AppStrings.pairFingerprintInvalid;
     }
     return null;
   }
@@ -139,6 +167,7 @@ class _PairingScreenState extends State<PairingScreen> {
       _testing = true;
       _errorMessage = null;
       _errorCode = null;
+      _showDetails = false;
     });
     BuddyApi? probe;
     try {
@@ -178,23 +207,11 @@ class _PairingScreenState extends State<PairingScreen> {
     }
   }
 
-  /// Map the API.md error envelope to human pairing guidance.
-  String _humanize(BuddyApiException e) {
-    switch (e.code) {
-      case 'unauthorized':
-        return 'Wrong token — the laptop said "${e.message}". Check for a trailing space, or generate a fresh token on the laptop and try again.';
-      case 'token_expired':
-        return 'That token reached its age limit — the laptop said "${e.message}". Generate a fresh token on the laptop and pair again.';
-      case 'locked_out':
-        return 'Too many wrong attempts — the laptop is temporarily locked. Wait a few minutes, then try again.';
-      case 'unreachable':
-        return e.message;
-      case 'forbidden':
-        return 'The laptop only allows this from near proximity. Join the same Wi-Fi and try again.';
-      default:
-        return e.message;
-    }
-  }
+  /// Map the API.md error envelope to curated human pairing guidance
+  /// (Track C3): curated copy only — the raw server message/code NEVER
+  /// renders inline. The code is available behind the "Details" expander;
+  /// raw JSON never reaches the UI. Delegates to [curatedPairingMessage].
+  String _humanize(BuddyApiException e) => curatedPairingMessage(e);
 
   @override
   Widget build(BuildContext context) {
@@ -216,10 +233,10 @@ class _PairingScreenState extends State<PairingScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Text('Pair with your laptop', style: Theme.of(context).textTheme.headlineSmall),
+            Text(AppStrings.pairTitle, style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: BuddySpacing.s2),
             Text(
-              'This is the trust moment: pairing gives this phone full remote control of the laptop agent. Stay on the same Wi-Fi and confirm the laptop screen before you save.',
+              AppStrings.pairSubtitle,
               style: small,
             ),
             const SizedBox(height: BuddySpacing.s5),
@@ -227,8 +244,7 @@ class _PairingScreenState extends State<PairingScreen> {
             // Empty state — shown above the form on first run.
             if (widget.initialHost == null)
               Semantics(
-                label:
-                    'No laptop yet. Run the pairing script on the laptop to get its IP and token, then enter them below.',
+                label: AppStrings.pairEmptyMessage,
                 container: true,
                 child: Container(
                   padding: const EdgeInsets.all(BuddySpacing.s4),
@@ -250,7 +266,7 @@ class _PairingScreenState extends State<PairingScreen> {
                       const SizedBox(width: BuddySpacing.s3),
                       Expanded(
                         child: Text(
-                          'No laptop yet. Run the pairing script on the laptop to get its IP and token, then enter them below.',
+                          AppStrings.pairEmptyMessage,
                           style: small,
                         ),
                       ),
@@ -261,7 +277,7 @@ class _PairingScreenState extends State<PairingScreen> {
             if (widget.initialHost == null)
               const SizedBox(height: BuddySpacing.s5),
 
-            Text('Laptop IP', style: Theme.of(context).textTheme.labelLarge),
+            Text(AppStrings.pairHostLabel, style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: BuddySpacing.s2),
             TextFormField(
               controller: _hostController,
@@ -272,7 +288,7 @@ class _PairingScreenState extends State<PairingScreen> {
               onFieldSubmitted: (_) => _tokenFocus.requestFocus(),
               autofillHints: const <String>[AutofillHints.url],
               decoration: const InputDecoration(
-                hintText: '192.168.1.10',
+                hintText: AppStrings.pairHostHint,
                 prefixIcon: Icon(Icons.lan_outlined, size: 18),
               ),
               style: BuddyTheme.mono(
@@ -281,7 +297,7 @@ class _PairingScreenState extends State<PairingScreen> {
               ),
             ),
             const SizedBox(height: BuddySpacing.s4),
-            Text('Pairing token', style: Theme.of(context).textTheme.labelLarge),
+            Text(AppStrings.pairTokenLabel, style: Theme.of(context).textTheme.labelLarge),
             const SizedBox(height: BuddySpacing.s2),
             TextFormField(
               controller: _tokenController,
@@ -293,10 +309,10 @@ class _PairingScreenState extends State<PairingScreen> {
               textInputAction: TextInputAction.next,
               onFieldSubmitted: (_) => _fpFocus.requestFocus(),
               decoration: InputDecoration(
-                hintText: 'paste the token from the laptop',
+                hintText: AppStrings.pairTokenHint,
                 prefixIcon: const Icon(Icons.key_outlined, size: 18),
                 suffixIcon: IconButton(
-                  tooltip: _obscured ? 'Show token' : 'Hide token',
+                  tooltip: _obscured ? AppStrings.pairShowToken : AppStrings.pairHideToken,
                   style: IconButton.styleFrom(
                     minimumSize: const Size(48, 48),
                     tapTargetSize: MaterialTapTargetSize.padded,
@@ -316,12 +332,12 @@ class _PairingScreenState extends State<PairingScreen> {
             ),
             const SizedBox(height: BuddySpacing.s2),
             Text(
-              'Saved in secure storage (Keystore / Keychain), never in plain files. Port defaults to 8443 over HTTPS.',
+              AppStrings.pairTokenNote,
               style: small,
             ),
             const SizedBox(height: BuddySpacing.s4),
             Text(
-              'Laptop cert fingerprint (SHA-256)',
+              AppStrings.pairFingerprintLabel,
               style: Theme.of(context).textTheme.labelLarge,
             ),
             const SizedBox(height: BuddySpacing.s2),
@@ -335,7 +351,7 @@ class _PairingScreenState extends State<PairingScreen> {
               textInputAction: TextInputAction.next,
               onFieldSubmitted: (_) => _btFocus.requestFocus(),
               decoration: const InputDecoration(
-                hintText: '6c9caeac… (Cert SHA256 from pair_device.py)',
+                hintText: AppStrings.pairFingerprintHint,
                 prefixIcon: Icon(Icons.verified_outlined, size: 18),
               ),
               style: BuddyTheme.mono(
@@ -345,12 +361,12 @@ class _PairingScreenState extends State<PairingScreen> {
             ),
             const SizedBox(height: BuddySpacing.s2),
             Text(
-              'The app trusts exactly this certificate and nothing else. Copy it from the laptop pairing script output — colons and spaces are fine.',
+              AppStrings.pairFingerprintNote,
               style: small,
             ),
             const SizedBox(height: BuddySpacing.s4),
             Text(
-              'Laptop Bluetooth ID (optional)',
+              AppStrings.pairBtLabel,
               style: Theme.of(context).textTheme.labelLarge,
             ),
             const SizedBox(height: BuddySpacing.s2),
@@ -365,7 +381,7 @@ class _PairingScreenState extends State<PairingScreen> {
                 if (!_testing) _testAndSave();
               },
               decoration: const InputDecoration(
-                hintText: 'AA:BB:CC:DD:EE:FF (Android) or UUID (iOS)',
+                hintText: AppStrings.pairBtHint,
                 prefixIcon: Icon(Icons.bluetooth_outlined, size: 18),
               ),
               style: BuddyTheme.mono(
@@ -375,7 +391,7 @@ class _PairingScreenState extends State<PairingScreen> {
             ),
             const SizedBox(height: BuddySpacing.s2),
             Text(
-              'Enables the near/far indicator from Bluetooth signal strength. Leave blank to skip it — proximity then follows server responses only. Find the ID in the laptop OS Bluetooth settings; the laptop must stay discoverable or paired.',
+              AppStrings.pairBtNote,
               style: small,
             ),
 
@@ -411,7 +427,7 @@ class _PairingScreenState extends State<PairingScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
                               Text(
-                                'Pairing failed',
+                                AppStrings.pairFailedTitle,
                                 style: Theme.of(context).textTheme.labelLarge
                                     ?.copyWith(
                                       color: errorText,
@@ -421,11 +437,25 @@ class _PairingScreenState extends State<PairingScreen> {
                               const SizedBox(height: BuddySpacing.s1),
                               Text(_errorMessage!, style: small),
                               if (_errorCode != null) ...<Widget>[
-                                const SizedBox(height: BuddySpacing.s2),
-                                Text(
-                                  'code: $_errorCode',
-                                  style: BuddyTheme.mono(muted, size: 11),
+                                TextButton(
+                                  style: TextButton.styleFrom(
+                                    minimumSize: const Size(48, 48),
+                                    tapTargetSize:
+                                        MaterialTapTargetSize.padded,
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                  onPressed: () => setState(
+                                    () => _showDetails = !_showDetails,
+                                  ),
+                                  child: const Text(
+                                    AppStrings.pairDetailsLabel,
+                                  ),
                                 ),
+                                if (_showDetails)
+                                  Text(
+                                    'code: $_errorCode',
+                                    style: BuddyTheme.mono(muted, size: 11),
+                                  ),
                               ],
                             ],
                           ),
@@ -450,7 +480,7 @@ class _PairingScreenState extends State<PairingScreen> {
                 onPressed: _testing ? null : _testAndSave,
                 child: _testing
                     ? Semantics(
-                        label: 'Testing connection, please wait',
+                        label: AppStrings.pairTestingLabel,
                         child: const SizedBox(
                           width: 18,
                           height: 18,
@@ -460,7 +490,7 @@ class _PairingScreenState extends State<PairingScreen> {
                           ),
                         ),
                       )
-                    : const Text('Test connection and save'),
+                    : const Text(AppStrings.pairSaveButton),
               ),
             ),
           ],

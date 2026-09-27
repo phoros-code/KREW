@@ -15,6 +15,10 @@ dependencies:
   flutter_blue_plus: ^2.3.12
   permission_handler: ^11.0.0 # BLE scan/connect runtime permission (Track A5.9)
   mjpeg_stream: ^1.0.0
+  package_info_plus: ^8.0.0 # Settings → About app version (Track C3)
+  intl: ^0.20.2 # flutter_localizations pin (Track C3 i18n scaffold)
+  flutter_localizations: # Track C3 i18n scaffold (English only)
+    sdk: flutter
 
 dev_dependencies:
   flutter_test:

@@ -1,13 +1,19 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'l10n/strings.dart';
 import 'models/buddy_event.dart';
+import 'models/notification_history.dart';
 import 'models/task_item.dart';
+import 'models/task_log.dart';
 import 'models/task_notification.dart';
 import 'screens/chat_screen.dart';
 import 'screens/pairing_screen.dart';
 import 'screens/preview_screen.dart';
+import 'screens/settings_screen.dart';
+import 'screens/task_detail_screen.dart';
 import 'screens/task_list_screen.dart';
 import 'services/ble_proximity.dart';
 import 'services/buddy_api.dart';
@@ -15,6 +21,7 @@ import 'services/proximity_service.dart';
 import 'services/secure_store.dart';
 import 'theme/buddy_theme.dart';
 import 'widgets/a11y.dart';
+import 'widgets/onboarding_overlay.dart';
 import 'widgets/status_header.dart';
 import 'widgets/task_notification_banner.dart';
 
@@ -63,10 +70,22 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
   final TaskList _tasks = TaskList();
   final List<BuddyEvent> _events = <BuddyEvent>[];
 
+  /// Track C3: in-memory bounded notification history (last 50) for the
+  /// "Recent notifications" section in the Tasks tab. Process lifetime
+  /// only — never persisted.
+  final NotificationHistory _history = NotificationHistory();
+
   BuddyApi? _api;
   String? _savedHost;
   String? _certFingerprint;
   String? _btDeviceId;
+
+  /// Track C3: ISO-8601 pairing timestamp (Settings → Pairing status),
+  /// in-app notification toggle (persisted), and the once-only onboarding
+  /// overlay flag (persisted; shown only when paired).
+  String? _pairedOn;
+  bool _notificationsEnabled = true;
+  bool _showOnboarding = false;
   bool _booting = true;
   String? _bootError;
   int _tab = 0;
@@ -148,6 +167,12 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       if (!mounted) return;
       _certFingerprint = await _store.readCertFingerprint();
       if (!mounted) return;
+      _pairedOn = await _store.readPairedOn();
+      if (!mounted) return;
+      _notificationsEnabled = await _store.readNotificationsEnabled();
+      if (!mounted) return;
+      final bool onboardingSeen = await _store.readOnboardingSeen();
+      if (!mounted) return;
       BuddyApi? attached;
       setState(() {
         _booting = false;
@@ -156,6 +181,9 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
           try {
             _attachApi(saved.host, saved.token, _certFingerprint, initialTab: 1);
             attached = _api;
+            // Track C3: onboarding shows once, after a pairing exists —
+            // never on a fresh (unpaired) first run.
+            _showOnboarding = !onboardingSeen;
           } on BuddyApiException {
             // Stale saved host that fails the strict gate: stay unpaired
             // instead of crashing boot — the user simply re-pairs.
@@ -172,8 +200,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _booting = false;
-        _bootError =
-            'Secure storage is unavailable — pairing details could not be read.';
+        _bootError = AppStrings.bootFailedMessage;
       });
     }
   }
@@ -203,6 +230,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       _tab = 1;
       _events.clear();
       _tasks.clear();
+      _history.clear();
       _streamError = null;
     });
     // A fresh validation just succeeded — treat the laptop as near until
@@ -217,6 +245,16 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       _btDeviceId = id;
       if (mounted) setState(() {});
       _refreshProximityConfig();
+    });
+    // Track C3: pairing just saved (savePairing wrote the timestamp) —
+    // refresh the local copy and show the once-only tour when unseen.
+    _store.readPairedOn().then((String? pairedOn) {
+      if (!mounted || generation != _pairingGeneration) return;
+      if (mounted) setState(() => _pairedOn = pairedOn);
+    });
+    _store.readOnboardingSeen().then((bool seen) {
+      if (!mounted || generation != _pairingGeneration) return;
+      if (!seen && mounted) setState(() => _showOnboarding = true);
     });
   }
 
@@ -330,15 +368,77 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       _savedHost = null;
       _certFingerprint = null;
       _btDeviceId = null;
+      _pairedOn = null;
+      _showOnboarding = false;
       _tab = 0;
       _events.clear();
       _tasks.clear();
+      _history.clear();
       _streamError = null;
       _streamConnected = false;
     });
     _proximity.markFar();
     _proximity.setUnknown();
     _proximity.setBleCause(null);
+  }
+
+  /// Track C3 pull-to-refresh (Chat console + task list): reconnect the SSE
+  /// stream (backoff reset, like every Reconnect button) and refetch the
+  /// proximity config (threshold + BLE re-arm rules).
+  Future<void> _handleRefresh() async {
+    _connectEvents();
+    await _refreshProximityConfig();
+  }
+
+  /// Track C3: open the per-task log view for [taskId]. Resolves the folded
+  /// task plus its full event list; a history row whose task already aged
+  /// out of nothing (history only records live tasks) still finds its task
+  /// because both fold from the same stream. Unknown ids are ignored.
+  void _openTask(String taskId) {
+    final TaskItem? task = _tasks.byId(taskId);
+    if (task == null || !mounted) return;
+    final List<BuddyEvent> events = eventsForTask(_events, taskId);
+    unawaited(
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (BuildContext context) =>
+              TaskDetailScreen(task: task, events: events),
+        ),
+      ),
+    );
+  }
+
+  /// Track C3: Settings → clear the Bluetooth device id. Drops the saved
+  /// id, stops the BLE watch (fail closed → server-403 behavior), and
+  /// confirms with a SnackBar.
+  Future<void> _onClearBt() async {
+    await _store.saveBtDeviceId(null);
+    await _stopBleWatch();
+    if (!mounted) return;
+    setState(() => _btDeviceId = null);
+    _messengerKey.currentState?.showSnackBar(
+      const SnackBar(content: Text(AppStrings.settingsBtCleared)),
+    );
+  }
+
+  /// Track C3: Settings → notification toggle (persisted in SecureStore).
+  Future<void> _onNotificationsChanged(bool enabled) async {
+    await _store.saveNotificationsEnabled(enabled);
+    if (!mounted) return;
+    setState(() => _notificationsEnabled = enabled);
+  }
+
+  /// Track C3: onboarding Skip / Get started — persist the seen flag so the
+  /// tour shows exactly once, then drop the overlay.
+  Future<void> _onOnboardingDone() async {
+    await _store.saveOnboardingSeen();
+    if (!mounted) return;
+    setState(() => _showOnboarding = false);
+  }
+
+  /// Track C3: Tasks-tab Clear-history button.
+  void _clearHistory() {
+    setState(() => _history.clear());
   }
 
   /// Manual (re)connect: resets the backoff, cancels any pending auto-retry
@@ -398,6 +498,9 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
           _events.insert(0, event);
           if (_events.length > 200) _events.removeLast();
           _tasks.applyEvent(event);
+          // Track C3: every task notice also lands in the bounded in-memory
+          // history (last 50) for the Tasks-tab section — popup or not.
+          if (notice != null) _history.add(notice);
         });
         _proximity.setOnline();
         _armStallWatchdog(attempt);
@@ -405,9 +508,10 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
         // current console-column screen — no new layout shape, and it works
         // in FAR (notifications-only) mode too. "View" jumps to the Tasks
         // tab; the notice itself already carries the result/error summary.
+        // Track C3: gated by the Settings toggle (history still records).
         final ScaffoldMessengerState? messenger =
             _messengerKey.currentState;
-        if (notice != null && messenger != null) {
+        if (notice != null && messenger != null && _notificationsEnabled) {
           showTaskNotification(
             messenger,
             notification: notice,
@@ -427,11 +531,11 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
         // to receive in the first place). See API.md error codes.
         String message = err is BuddyApiException
             ? err.message
-            : 'The live stream dropped. Reconnect to resume updates.';
+            : AppStrings.streamDropped;
         bool authFailure = false;
         if (err is BuddyApiException &&
             (err.code == 'unauthorized' || err.code == 'token_expired')) {
-          message = 'The laptop rejected the token. Re-pair from the Pair tab.';
+          message = AppStrings.streamAuthFailure;
           // Re-pair needs the user — never auto-retry an auth failure.
           authFailure = true;
         }
@@ -449,7 +553,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
         // onError already recorded the message and scheduled the retry —
         // a bare close after an error adds nothing (and must not double
         // the backoff count).
-        _onStreamDown('The live stream closed. Reconnect to resume.');
+        _onStreamDown(AppStrings.streamClosed);
       },
       cancelOnError: false,
     );
@@ -488,7 +592,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
     _stallTimer?.cancel();
     _stallTimer = Timer(const Duration(seconds: 30), () {
       if (!mounted || attempt != _connectAttempt) return;
-      _onStreamDown('The live stream went quiet — reconnecting…');
+      _onStreamDown(AppStrings.streamQuiet);
     });
   }
 
@@ -554,6 +658,15 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    // Track C3 i18n scaffold: English only (lib/l10n/strings.dart is the
+    // copy table; full ARB flow out of scope).
+    const List<LocalizationsDelegate<dynamic>> delegates =
+        <LocalizationsDelegate<dynamic>>[
+      GlobalMaterialLocalizations.delegate,
+      GlobalWidgetsLocalizations.delegate,
+      GlobalCupertinoLocalizations.delegate,
+    ];
+    const List<Locale> supported = <Locale>[Locale('en')];
     if (_bootError != null) {
       // Designed boot-failure state (Track A5.6): secure storage unreadable.
       // One explanatory line + Retry — same tokens, no new styling.
@@ -564,12 +677,14 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
         scaffoldMessengerKey: _messengerKey,
         theme: BuddyTheme.light(),
         darkTheme: BuddyTheme.dark(),
+        localizationsDelegates: delegates,
+        supportedLocales: supported,
         home: Scaffold(
           body: Center(
             child: Padding(
               padding: const EdgeInsets.all(BuddySpacing.s5),
               child: Semantics(
-                label: 'Could not start. $message',
+                label: '${AppStrings.bootFailedTitle}. $message',
                 container: true,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -591,7 +706,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: BuddySpacing.s3),
                     Text(
-                      'Could not start',
+                      AppStrings.bootFailedTitle,
                       style: Theme.of(context).textTheme.titleMedium,
                       textAlign: TextAlign.center,
                     ),
@@ -610,7 +725,7 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                           tapTargetSize: MaterialTapTargetSize.padded,
                         ),
                         onPressed: _retryBoot,
-                        child: const Text('Retry'),
+                        child: const Text(AppStrings.actionRetry),
                       ),
                     ),
                   ],
@@ -626,6 +741,8 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
       scaffoldMessengerKey: _messengerKey,
       theme: BuddyTheme.light(),
       darkTheme: BuddyTheme.dark(),
+      localizationsDelegates: delegates,
+      supportedLocales: supported,
       home: _booting
           ? Scaffold(
               body: Center(
@@ -640,58 +757,74 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                 ),
               ),
             )
-          : Scaffold(
-              appBar: StatusHeader(
-                proximity: _proximity.mode,
-                connection: _proximity.connection,
-                runningCount: _tasks.runningCount,
-                farReason: _proximity.bleCause,
-              ),
-              body: IndexedStack(
-                index: _tab,
-                children: <Widget>[
-                  PairingScreen(
-                    store: _store,
-                    initialHost: _savedHost,
-                    initialBtDeviceId: _btDeviceId,
-                    initialCertFingerprint: _certFingerprint,
-                    onPaired: _onPaired,
-                  ),
-                  ChatScreen(
-                    api: _api,
-                    events: _events,
-                    proximity: _proximity,
-                    onSend: _sendCommand,
-                    streamError: _streamError,
-                    streamConnected: _streamConnected,
-                    onRetryStream: _connectEvents,
-                  ),
-                  TaskListScreen(
-                    tasks: _tasks,
-                    isPaired: _api != null,
-                    streamError: _streamError,
-                    onRetry: _connectEvents,
-                  ),
-                  PreviewScreen(
-                    api: _api,
+          : Stack(
+              children: <Widget>[
+                Scaffold(
+                  appBar: StatusHeader(
                     proximity: _proximity.mode,
-                    proximityService: _proximity,
-                    onCalibrated: _refreshProximityConfig,
-                    suspendSignal: _previewSuspend,
+                    connection: _proximity.connection,
+                    runningCount: _tasks.runningCount,
+                    farReason: _proximity.bleCause,
                   ),
-                ],
-              ),
-              bottomNavigationBar: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  if (_api != null)
-                    _UnpairStrip(savedHost: _savedHost, onUnpair: _onUnpair),
+                  body: IndexedStack(
+                    index: _tab,
+                    children: <Widget>[
+                      PairingScreen(
+                        store: _store,
+                        initialHost: _savedHost,
+                        initialBtDeviceId: _btDeviceId,
+                        initialCertFingerprint: _certFingerprint,
+                        onPaired: _onPaired,
+                      ),
+                      ChatScreen(
+                        api: _api,
+                        events: _events,
+                        proximity: _proximity,
+                        onSend: _sendCommand,
+                        streamError: _streamError,
+                        streamConnected: _streamConnected,
+                        onRetryStream: _connectEvents,
+                        onRefresh: _api == null ? null : _handleRefresh,
+                      ),
+                      TaskListScreen(
+                        tasks: _tasks,
+                        isPaired: _api != null,
+                        streamError: _streamError,
+                        onRetry: _connectEvents,
+                        notifications: _history.items,
+                        onClearHistory: _clearHistory,
+                        onOpenTask: _openTask,
+                        onRefresh: _api == null ? null : _handleRefresh,
+                      ),
+                      PreviewScreen(
+                        api: _api,
+                        proximity: _proximity.mode,
+                        proximityService: _proximity,
+                        onCalibrated: _refreshProximityConfig,
+                        suspendSignal: _previewSuspend,
+                      ),
+                      SettingsScreen(
+                        api: _api,
+                        host: _savedHost,
+                        pairedOn: _pairedOn,
+                        btDeviceId: _btDeviceId,
+                        threshold: _proximity.rssiNearThreshold,
+                        notificationsEnabled: _notificationsEnabled,
+                        onNotificationsChanged: _onNotificationsChanged,
+                        onClearBt: _onClearBt,
+                        onUnpair: _onUnpair,
+                      ),
+                    ],
+                  ),
+                  // Track C3: the old Pair-tab unpair strip is gone — unpair
+                  // is a single destructive path in Settings.
+                  //
                   // Track C1: M3 NavigationBar (not M2 BottomNavigationBar).
-                  // 4 destinations + labels + behavior identical; styling
+                  // 5 destinations + labels + behavior identical; styling
                   // (8px indicator, primary/ink colors) comes from
                   // BuddyTheme.navigationBarTheme.
                   // Track C2: tooltips mirror labels for screen readers.
-                  NavigationBar(
+                  bottomNavigationBar: NavigationBar(
                     selectedIndex: _tab,
                     onDestinationSelected: _onTab,
                     labelBehavior:
@@ -700,105 +833,43 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                       NavigationDestination(
                         icon: Icon(Icons.link_outlined),
                         selectedIcon: Icon(Icons.link),
-                        label: 'Pair',
-                        tooltip: 'Pair',
+                        label: AppStrings.tabPair,
+                        tooltip: AppStrings.tabPair,
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.chat_bubble_outline),
                         selectedIcon: Icon(Icons.chat_bubble),
-                        label: 'Chat',
-                        tooltip: 'Chat',
+                        label: AppStrings.tabChat,
+                        tooltip: AppStrings.tabChat,
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.assignment_outlined),
                         selectedIcon: Icon(Icons.assignment),
-                        label: 'Tasks',
-                        tooltip: 'Tasks',
+                        label: AppStrings.tabTasks,
+                        tooltip: AppStrings.tabTasks,
                       ),
                       NavigationDestination(
                         icon: Icon(Icons.monitor_outlined),
                         selectedIcon: Icon(Icons.monitor),
-                        label: 'Screen',
-                        tooltip: 'Screen',
+                        label: AppStrings.tabScreen,
+                        tooltip: AppStrings.tabScreen,
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.settings_outlined),
+                        selectedIcon: Icon(Icons.settings),
+                        label: AppStrings.tabSettings,
+                        tooltip: AppStrings.tabSettings,
                       ),
                     ],
                   ),
-                ],
-              ),
-            ),
-    );
-  }
-}
-
-/// Slim "paired to <host>" strip with an unpair action — whitespace and one
-/// text button, not another card.
-class _UnpairStrip extends StatelessWidget {
-  const _UnpairStrip({required this.savedHost, required this.onUnpair});
-
-  final String? savedHost;
-  final VoidCallback onUnpair;
-
-  @override
-  Widget build(BuildContext context) {
-    final bool dark = Theme.of(context).brightness == Brightness.dark;
-    final Color muted = dark
-        ? BuddyColors.inkMutedOnDark
-        : BuddyColors.inkMutedOnLight;
-    // Track C2: the strip is at least 48dp tall; the Unpair action meets
-    // the 48x48 tap target.
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minHeight: 48),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: BuddySpacing.s4),
-        child: Row(
-          children: <Widget>[
-            Expanded(
-              child: Text(
-                savedHost == null ? 'Paired' : 'Paired to $savedHost',
-                style: BuddyTheme.mono(muted, size: 11),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            TextButton(
-              style: TextButton.styleFrom(
-                minimumSize: const Size(48, 48),
-                tapTargetSize: MaterialTapTargetSize.padded,
-              ),
-              onPressed: () async {
-                final bool? confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (BuildContext ctx) => AlertDialog(
-                    title: const Text('Unpair this laptop?'),
-                    content: const Text(
-                      'The token is deleted from secure storage. You can re-pair at any time from the laptop.',
-                    ),
-                    actions: <Widget>[
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          minimumSize: const Size(48, 48),
-                          tapTargetSize: MaterialTapTargetSize.padded,
-                        ),
-                        onPressed: () => Navigator.of(ctx).pop(false),
-                        child: const Text('Cancel'),
-                      ),
-                      TextButton(
-                        style: TextButton.styleFrom(
-                          minimumSize: const Size(48, 48),
-                          tapTargetSize: MaterialTapTargetSize.padded,
-                        ),
-                        onPressed: () => Navigator.of(ctx).pop(true),
-                        child: const Text('Unpair'),
-                      ),
-                    ],
+                ),
+                // Track C3 onboarding: once-only overlay after first pairing.
+                if (_showOnboarding && _api != null)
+                  Positioned.fill(
+                    child: OnboardingOverlay(onDone: _onOnboardingDone),
                   ),
-                );
-                if (confirm == true) onUnpair();
-              },
-              child: const Text('Unpair'),
+              ],
             ),
-          ],
-        ),
-      ),
     );
   }
 }

@@ -14,10 +14,17 @@ class ConsoleColumn extends StatelessWidget {
     super.key,
     required this.child,
     this.bottomBar,
+    this.onRefresh,
   });
 
   final Widget child;
   final Widget? bottomBar;
+
+  /// Track C3 pull-to-refresh: when non-null the scrollable content region
+  /// is wrapped in a [RefreshIndicator] (AlwaysScrollable physics so the
+  /// gesture works even on short content). Screens pass the shell refresh
+  /// (reconnect stream + refetch proximity config).
+  final Future<void> Function()? onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -26,13 +33,20 @@ class ConsoleColumn extends StatelessWidget {
         ? BuddyColors.hairlineOnDark
         : BuddyColors.hairlineOnLight;
 
+    final Future<void> Function()? refresh = onRefresh;
+    final Widget scroll = SingleChildScrollView(
+      physics: refresh == null
+          ? null
+          : const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.all(BuddySpacing.s4),
+      child: child,
+    );
     return Column(
       children: <Widget>[
         Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(BuddySpacing.s4),
-            child: child,
-          ),
+          child: refresh == null
+              ? scroll
+              : RefreshIndicator(onRefresh: refresh, child: scroll),
         ),
         if (bottomBar != null)
           Container(
