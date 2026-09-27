@@ -24,8 +24,10 @@ from buddy_core.tools import files, shell
 import hashlib
 
 # Executor scope per ARCHITECTURE.md — research tools stay in the
-# orchestrator's research flow; the executor only does shell + files.
-EXECUTOR_TOOLS = frozenset({"shell", "read_file", "write_file", "list_dir"})
+# orchestrator's research flow; the executor only does shell + files +
+# the Track B5 browser/focus steps (browser_act always pauses for laptop
+# consent first; focus_check is a read-only poll).
+EXECUTOR_TOOLS = frozenset({"shell", "read_file", "write_file", "list_dir", "browser_act", "focus_check"})
 
 # Track B3 — authoring scope per agent category (who may ORIGINATE which
 # tool in a plan). EXECUTOR_TOOLS above is the RUNTIME scope of
@@ -33,10 +35,14 @@ EXECUTOR_TOOLS = frozenset({"shell", "read_file", "write_file", "list_dir"})
 # coder-originated file steps (see orchestrator._run_code). `planner` owns
 # no tools (it only emits plans); launch/list_app and delegate are routed
 # outside execute_plan (orchestrator launch/list flows; delegate refused).
+# Track B5: browser_act is research-adjacent (researcher originates it);
+# focus_check is executor-originated (read-only). type_text/press_keys are
+# in NO scope — desktop input lands in a later track, so validate_plan
+# rejects them as unknown tools and they can never originate anywhere.
 AGENT_TOOL_SCOPES: dict[str, frozenset[str]] = {
     "coder": frozenset({"write_file", "read_file", "list_dir"}),
-    "executor": frozenset({"shell"}),
-    "researcher": frozenset({"web_search", "fetch_page"}),
+    "executor": frozenset({"shell", "focus_check"}),
+    "researcher": frozenset({"web_search", "fetch_page", "browser_act"}),
     "planner": frozenset(),
 }
 
@@ -87,19 +93,22 @@ def _redact_text_value(value: str) -> dict:
 def redact_event_args(tool: str, args: dict[str, Any] | None) -> dict[str, Any]:
     """Redact sensitive bodies before ANY event emission (Track A2).
 
-    Replaces ``args["content"]`` (write_file) and ``args["command"]``
-    (shell) string bodies with ``{"length": N, "sha256": "…"}``. All other
-    keys pass through unchanged. Always returns a NEW dict — the caller's
+    Replaces ``args["content"]`` (write_file), ``args["command"]``
+    (shell), and ``args["text"]`` (browser_act fill text / automation
+    stubs — typed form/keystroke bodies that can carry passwords) string
+    bodies with ``{"length": N, "sha256": "…"}``. All other keys pass
+    through unchanged. Always returns a NEW dict — the caller's
     original is never mutated (the plan still executes with full values;
     only the emitted event is redacted).
 
-    ``tool`` is accepted for future per-tool rules; currently both keys
-    are redacted regardless of tool so no emit site can leak by mistake.
+    ``tool`` is accepted for future per-tool rules; currently all three
+    keys are redacted regardless of tool so no emit site can leak by
+    mistake.
     """
     if not isinstance(args, dict):
         return {}
     redacted = dict(args)
-    for key in ("content", "command"):
+    for key in ("content", "command", "text"):
         val = redacted.get(key)
         if isinstance(val, str):
             redacted[key] = _redact_text_value(val)
@@ -221,6 +230,42 @@ def _run_step(
             raise ValueError("list_dir requires a string 'path' arg")
         names = files.list_dir(path, tools_cfg.files)
         return "\n".join(names) if names else "(empty)"
+    if tool == "browser_act":
+        # Track B5: DESTRUCTIVE-CLASS — the pause lives INSIDE browser_act
+        # (single pause, single op identity: the tool pauses with its own
+        # canonical args, so no executor-side pre-pause that could double
+        # the approval round). Approval authorizes within policy bounds
+        # only: the SSRF guard + domain allowlist + post-navigation
+        # re-check still apply after approval.
+        from buddy_core.tools import browser as _browser
+
+        action = args.get("action")
+        url = args.get("url")
+        if not isinstance(action, str) or action not in _browser.BROWSER_ACTIONS:
+            raise ValueError(
+                f"browser_act 'action' must be one of {sorted(_browser.BROWSER_ACTIONS)}"
+            )
+        if not isinstance(url, str) or not url.strip():
+            raise ValueError("browser_act requires a non-empty string 'url' arg")
+        return _browser.browser_act(
+            action,
+            url,
+            getattr(tools_cfg, "browser", _browser.BrowserConfig()),
+            selector=args.get("selector"),
+            text=args.get("text"),
+            consent_checker=consent_checker,
+        )
+    if tool == "focus_check":
+        # Track B5: read-only window-title poll — observes, never acts, so
+        # no consent hook. Shape-checked here (defense in depth with the
+        # planner shape check); platform gating lives in the tool.
+        from buddy_core.tools import automation as _automation
+
+        needle = args.get("title_substring")
+        if not isinstance(needle, str) or not needle.strip():
+            raise ValueError("focus_check requires a non-empty string 'title_substring' arg")
+        found = _automation.focus_check(needle)
+        return f"Window matching {needle!r}: {'found' if found else 'not found'}"
     raise ValueError(f"Tool {tool!r} is outside executor scope")
 
 
@@ -233,9 +278,10 @@ def execute_plan(
 ) -> ExecutorResult:
     """Execute a validated plan step by step. Never raises — returns a result.
 
-    ``consent_checker`` (Track B3): in-process laptop-approval callback for
-    destructive steps (non-allowlisted shell, overwriting writes). None
-    means no approvals exist — destructive steps pause fail-closed.
+    ``consent_checker`` (Track B3, extended Track B5): in-process
+    laptop-approval callback for destructive steps (non-allowlisted shell,
+    overwriting writes, EVERY browser_act call). None means no approvals
+    exist — destructive steps pause fail-closed.
     """
     try:
         validate_plan(plan, tools_cfg.agent_limits)

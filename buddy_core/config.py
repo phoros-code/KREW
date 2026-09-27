@@ -93,12 +93,21 @@ class MemoryConfig:
 
 
 @dataclass
+class BrowserConfig:
+    # Track B5: browser automation scope. Empty = deny-all (fail closed);
+    # the operator opts in per-domain, e.g. ["example.com"] (covers
+    # subdomains too). Even a listed host must resolve public per hop.
+    allowed_domains: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ToolsConfig:
     shell: ShellConfig = field(default_factory=ShellConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     agent_limits: AgentLimits = field(default_factory=AgentLimits)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
 
 
 def load_models_config(path: str | Path | None = None) -> ModelsConfig:
@@ -146,6 +155,18 @@ def load_tools_config(path: str | Path | None = None) -> ToolsConfig:
         mem_cap = MemoryConfig.cap
     if mem_cap < 1:
         mem_cap = MemoryConfig.cap
+    browser = data.get("browser", {})
+    if not isinstance(browser, dict):
+        browser = {}
+    raw_domains = browser.get("allowed_domains", [])
+    if not isinstance(raw_domains, list):
+        raw_domains = []
+    allowed_domains = [d.strip() for d in raw_domains if isinstance(d, str) and d.strip()]
+    # NOTE (review N4): there is intentionally NO automation.enabled key.
+    # An earlier revision had one that nothing read — a toggle that changes
+    # nothing is false assurance. focus_check is read-only and always
+    # available; type_text/press_keys are consent-gated stubs regardless.
+    # If a future typing track needs a kill-switch, add it then WITH wiring.
     return ToolsConfig(
         shell=ShellConfig(
             allowlist=list(shell.get("allowlist", [])),
@@ -164,6 +185,7 @@ def load_tools_config(path: str | Path | None = None) -> ToolsConfig:
             tool_timeout_seconds=int(limits.get("tool_timeout_seconds", 30)),
         ),
         memory=MemoryConfig(path=mem_path, cap=mem_cap),
+        browser=BrowserConfig(allowed_domains=allowed_domains),
     )
 
 

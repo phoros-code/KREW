@@ -28,6 +28,12 @@ KNOWN_TOOLS = frozenset(
         "launch_app",
         "list_apps",
         "delegate",
+        # Track B5: browser automation (research-adjacent) + read-only
+        # focus check. type_text/press_keys are DELIBERATELY absent —
+        # desktop input lands in a later track, so plans naming them are
+        # rejected as unknown tools (fail closed).
+        "browser_act",
+        "focus_check",
     }
 )
 
@@ -56,10 +62,11 @@ class PlanRejected(ValueError):
 
 
 def _validate_step_args(step: ToolCall) -> None:
-    """Minimal per-tool arg-shape checks (Track B1).
+    """Minimal per-tool arg-shape checks (Track B1, extended Track B5).
 
-    Only the five shapes named in the B1 brief are checked here —
-    shell/read_file/list_dir/web_search/fetch_page. All other tools
+    Only the shapes named in the B1 brief are checked here —
+    shell/read_file/list_dir/web_search/fetch_page — plus the B5 shapes
+    (browser_act/focus_check). All other tools
     (write_file/launch_app/list_apps/delegate) keep the existing
     tool-name-only check so deterministic builders and B3 work are
     unaffected. Anything malformed raises PlanRejected (fail closed).
@@ -97,6 +104,33 @@ def _validate_step_args(step: ToolCall) -> None:
             mc = args["max_chars"]
             if not isinstance(mc, int) or isinstance(mc, bool) or not 1 <= mc <= 50000:
                 raise PlanRejected("fetch_page 'max_chars' must be an int in 1..50000")
+    elif step.tool == "browser_act":
+        # Track B5: fixed action subset; url always required; click/fill
+        # need a selector; fill needs text. Anything malformed fails closed.
+        # (Domain allowlist + SSRF + consent are enforced at execution.)
+        from buddy_core.tools.browser import BROWSER_ACTIONS
+
+        action = args.get("action")
+        if not isinstance(action, str) or action not in BROWSER_ACTIONS:
+            raise PlanRejected(
+                f"browser_act 'action' must be one of {sorted(BROWSER_ACTIONS)}"
+            )
+        url = args.get("url")
+        if not isinstance(url, str) or not url.strip():
+            raise PlanRejected("browser_act requires a non-empty string 'url'")
+        if action in ("click", "fill"):
+            sel = args.get("selector")
+            if not isinstance(sel, str) or not sel.strip():
+                raise PlanRejected(f"browser_act {action!r} requires a non-empty string 'selector'")
+        if action == "fill":
+            text = args.get("text")
+            if not isinstance(text, str) or not text:
+                raise PlanRejected("browser_act 'fill' requires non-empty string 'text'")
+    elif step.tool == "focus_check":
+        # Track B5: read-only title poll — just the shape here.
+        needle = args.get("title_substring")
+        if not isinstance(needle, str) or not needle.strip():
+            raise PlanRejected("focus_check requires a non-empty string 'title_substring'")
 
 
 def _validate_step_paths_against_jail(step: ToolCall, files_cfg) -> None:
@@ -242,6 +276,11 @@ def _planner_system_prompt(tools_cfg, memories=None) -> str:
         '- write_file: {"path": str (required), "content": str (required)}\n'
         '- launch_app: {"app_key": str (required, must exist in config/apps.yaml)}\n'
         '- list_apps: {}\n'
+        '- browser_act: {"action": "goto"|"click"|"fill"|"read_text" (required), '
+        '"url": str (required, must be allowlisted + public), '
+        '"selector": str (required for click/fill), '
+        '"text": str (required for fill)}\n'
+        '- focus_check: {"title_substring": str (required, window-title poll)}\n'
         '- delegate: {"goal": str (required)} — sub-plan at depth+1 '
         "(schema-ready only; execution is gated — multi-agent delegation "
         "executes in a later track).\n"
