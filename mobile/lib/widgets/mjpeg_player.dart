@@ -13,6 +13,7 @@ import 'package:mjpeg_stream/src/mjpeg_stream_processor.dart';
 
 import '../services/buddy_api.dart';
 import '../theme/buddy_theme.dart';
+import 'a11y.dart';
 
 /// Authenticated MJPEG player for the consent-gated GET /screen stream.
 ///
@@ -48,6 +49,7 @@ class MjpegPlayer extends StatefulWidget {
     this.client,
     this.certFingerprint,
     this.stallTimeout = const Duration(seconds: 5),
+    this.semanticLabel = 'Laptop screen preview, live',
   });
 
   /// Full stream URL including `?consent_id=` (BuddyApi.screenStreamUrl).
@@ -77,6 +79,10 @@ class MjpegPlayer extends StatefulWidget {
   /// stream opened means the preview ended server-side — same ended state
   /// as a clean close. Injectable so tests run on milliseconds.
   final Duration stallTimeout;
+
+  /// Track C2: live-region label for the streaming frame
+  /// ("Laptop screen preview, live" / "Laptop webcam preview, live").
+  final String semanticLabel;
 
   @override
   State<MjpegPlayer> createState() => _MjpegPlayerState();
@@ -135,12 +141,17 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
       _sub?.cancel();
       _sub = null;
       setState(() => _ended = true);
+      // Track C2: live-region announcement (polite).
+      announceLiveRegion(previewEndedMessage);
     });
   }
 
   void _onStreamDone() {
     _stallTimer?.cancel();
-    if (mounted && !_failed) setState(() => _ended = true);
+    if (mounted && !_failed && !_ended) {
+      setState(() => _ended = true);
+      announceLiveRegion(previewEndedMessage);
+    }
   }
 
   Future<void> _start() async {
@@ -250,61 +261,89 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         if (showError)
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(
-                Icons.error_outline,
-                size: 32,
-                color: errorText,
-              ),
-              const SizedBox(height: BuddySpacing.s3),
-              Text(
-                _ended ? 'Preview ended' : 'Stream dropped — retry',
-                style: Theme.of(context).textTheme.titleMedium,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: BuddySpacing.s2),
-              Text(
-                _ended
-                    ? 'The laptop closed the preview stream. Retry re-checks the grant with the laptop; nothing reconnects blindly.'
-                    : 'The live frames stopped — the grant may have expired. Retry re-checks with the laptop; nothing reconnects blindly.',
-                style: small,
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: BuddySpacing.s4),
-              OutlinedButton(
-                onPressed: widget.onRetry,
-                child: const Text('Retry'),
-              ),
-            ],
+          Semantics(
+            label: _ended
+                ? 'Preview ended. The laptop closed the preview stream.'
+                : 'Stream dropped — retry. The live frames stopped.',
+            container: true,
+            liveRegion: true,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                ExcludeSemantics(
+                  child: Icon(
+                    Icons.error_outline,
+                    size: 32,
+                    color: errorText,
+                  ),
+                ),
+                const SizedBox(height: BuddySpacing.s3),
+                Text(
+                  _ended ? 'Preview ended' : 'Stream dropped — retry',
+                  style: Theme.of(context).textTheme.titleMedium,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: BuddySpacing.s2),
+                Text(
+                  _ended
+                      ? 'The laptop closed the preview stream. Retry re-checks the grant with the laptop; nothing reconnects blindly.'
+                      : 'The live frames stopped — the grant may have expired. Retry re-checks with the laptop; nothing reconnects blindly.',
+                  style: small,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: BuddySpacing.s4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 48),
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(48, 48),
+                      tapTargetSize: MaterialTapTargetSize.padded,
+                    ),
+                    onPressed: widget.onRetry,
+                    child: const Text('Retry'),
+                  ),
+                ),
+              ],
+            ),
           )
         else if (frame == null)
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              const SizedBox(
-                width: BuddySpacing.s5,
-                height: BuddySpacing.s5,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: BuddyColors.primary,
+          Semantics(
+            label: 'Starting live preview, please wait',
+            container: true,
+            liveRegion: true,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                const SizedBox(
+                  width: BuddySpacing.s5,
+                  height: BuddySpacing.s5,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: BuddyColors.primary,
+                  ),
                 ),
-              ),
-              const SizedBox(height: BuddySpacing.s3),
-              Text('Starting live preview…', style: small),
-            ],
+                const SizedBox(height: BuddySpacing.s3),
+                Text('Starting live preview…', style: small),
+              ],
+            ),
           )
         else
-          ClipRRect(
-            borderRadius: const BorderRadius.all(
-              Radius.circular(BuddyRadii.container),
-            ),
-            child: Image.memory(
-              frame,
-              width: double.infinity,
-              fit: BoxFit.contain,
-              gaplessPlayback: true,
+          Semantics(
+            label: widget.semanticLabel,
+            image: true,
+            liveRegion: true,
+            excludeSemantics: true,
+            child: ClipRRect(
+              borderRadius: const BorderRadius.all(
+                Radius.circular(BuddyRadii.container),
+              ),
+              child: Image.memory(
+                frame,
+                width: double.infinity,
+                fit: BoxFit.contain,
+                gaplessPlayback: true,
+                excludeFromSemantics: true,
+              ),
             ),
           ),
         if (host.isNotEmpty) ...<Widget>[
@@ -316,9 +355,16 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
           ),
         ],
         const SizedBox(height: BuddySpacing.s3),
-        OutlinedButton(
-          onPressed: widget.onStop,
-          child: const Text('Stop preview'),
+        ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size(48, 48),
+              tapTargetSize: MaterialTapTargetSize.padded,
+            ),
+            onPressed: widget.onStop,
+            child: const Text('Stop preview'),
+          ),
         ),
       ],
     );

@@ -69,23 +69,29 @@ class _CommandBarState extends State<CommandBar> {
         if (!widget.enabled && widget.disabledReason != null)
           Padding(
             padding: const EdgeInsets.only(bottom: BuddySpacing.s2),
-            child: Row(
-              children: <Widget>[
-                Icon(
-                  Icons.lock_outline,
-                  size: 14,
-                  color: warningText,
-                ),
-                const SizedBox(width: BuddySpacing.s2),
-                Expanded(
-                  child: Text(
-                    widget.disabledReason!,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodySmall?.copyWith(color: muted),
+            child: Semantics(
+              label:
+                  'Command bar unavailable: ${widget.disabledReason}',
+              child: Row(
+                children: <Widget>[
+                  ExcludeSemantics(
+                    child: Icon(
+                      Icons.lock_outline,
+                      size: 14,
+                      color: warningText,
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: BuddySpacing.s2),
+                  Expanded(
+                    child: Text(
+                      widget.disabledReason!,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodySmall?.copyWith(color: muted),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         Row(
@@ -107,23 +113,35 @@ class _CommandBarState extends State<CommandBar> {
               ),
             ),
             const SizedBox(width: BuddySpacing.s2),
-            SizedBox(
-              height: BuddySpacing.s7,
+            // Track C2: ConstrainedBox(minHeight:48) instead of a fixed
+            // 48px box — grows with text scaling, never shrinks below the
+            // 48dp tap target.
+            ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 48),
               child: ElevatedButton(
                 onPressed: active ? _submit : null,
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(48, 48),
+                  tapTargetSize: MaterialTapTargetSize.padded,
+                ),
                 child: busy
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
+                    ? Semantics(
+                        label: 'Sending command, please wait',
+                        child: const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         ),
                       )
                     : const Row(
                         mainAxisSize: MainAxisSize.min,
                         children: <Widget>[
-                          Icon(Icons.send, size: 16),
+                          ExcludeSemantics(
+                            child: Icon(Icons.send, size: 16),
+                          ),
                           SizedBox(width: BuddySpacing.s2),
                           Text('Send'),
                         ],

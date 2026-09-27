@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../services/buddy_api.dart';
 import '../services/proximity_service.dart';
 import '../theme/buddy_theme.dart';
+import 'a11y.dart';
 import 'mjpeg_player.dart';
 
 /// Consent-gated live preview pointed at GET /screen or GET /webcam
@@ -242,6 +243,8 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       _consentId = null;
       _phase = _PreviewPhase.needsConsent;
     });
+    // Track C2: live-region announcement (polite).
+    announceLiveRegion(previewEndedMessage);
   }
 
   /// Shared routing for every grant probe (Check again + mid-stream retry).
@@ -258,6 +261,10 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case ScreenStatus.available:
         if (restartStream) _streamKey++;
         _phase = _PreviewPhase.ready;
+        // Track C2: live-region announcement (polite).
+        announceLiveRegion(
+          previewReadyMessage(webcam: _isWebcam),
+        );
       case ScreenStatus.consentRequired:
         // Still pending on the laptop — back to waiting, id kept.
         _phase = _PreviewPhase.awaitingApproval;
@@ -266,6 +273,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
         _phase = _PreviewPhase.error;
         _errorMessage =
             'The laptop denied this preview request. Request again if that was a mistake.';
+        announceLiveRegion(previewDeniedMessage);
       case ScreenStatus.notImplemented:
         _phase = _PreviewPhase.notImplemented;
       case ScreenStatus.forbidden:
@@ -314,10 +322,12 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       // Empty state: nothing to preview until pairing exists.
       return _Frame(
         hairline: hairline,
+        semanticLabel:
+            'No laptop paired yet. Pair from the Pair tab first — then you can request a ${_isWebcam ? 'webcam' : 'screen'} preview here.',
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(_sourceIcon, size: 32, color: muted),
+            ExcludeSemantics(child: Icon(_sourceIcon, size: 32, color: muted)),
             const SizedBox(height: BuddySpacing.s3),
             Text(
               'No laptop paired yet',
@@ -340,13 +350,17 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       // FAR blocks a near-only endpoint — say so plainly.
       return _Frame(
         hairline: hairline,
+        semanticLabel:
+            'Preview unavailable while far. $_previewNoun is a near-only endpoint. Move closer to the laptop.',
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(
-              Icons.lock_outline,
-              size: 32,
-              color: warningText,
+            ExcludeSemantics(
+              child: Icon(
+                Icons.lock_outline,
+                size: 32,
+                color: warningText,
+              ),
             ),
             const SizedBox(height: BuddySpacing.s3),
             Text(
@@ -369,13 +383,17 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case _PreviewPhase.needsConsent:
         return _Frame(
           hairline: hairline,
+          semanticLabel:
+              '$_sourceTitle, consent required. Request a preview to begin.',
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Row(
                 children: <Widget>[
-                  Icon(_sourceIcon, size: 20, color: muted),
+                  ExcludeSemantics(
+                    child: Icon(_sourceIcon, size: 20, color: muted),
+                  ),
                   const SizedBox(width: BuddySpacing.s2),
                   Text(
                     _sourceTitle,
@@ -391,9 +409,16 @@ class _ScreenPreviewState extends State<ScreenPreview> {
                 style: small,
               ),
               const SizedBox(height: BuddySpacing.s4),
-              ElevatedButton(
-                onPressed: _requestConsent,
-                child: const Text('Request preview'),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
+                  onPressed: _requestConsent,
+                  child: const Text('Request preview'),
+                ),
               ),
             ],
           ),
@@ -401,15 +426,19 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case _PreviewPhase.requesting:
         return _Frame(
           hairline: hairline,
+          semanticLabel: 'Requesting preview, please wait',
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              const SizedBox(
-                width: BuddySpacing.s5,
-                height: BuddySpacing.s5,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: BuddyColors.primary,
+              Semantics(
+                label: 'Requesting preview, please wait',
+                child: const SizedBox(
+                  width: BuddySpacing.s5,
+                  height: BuddySpacing.s5,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: BuddyColors.primary,
+                  ),
                 ),
               ),
               const SizedBox(height: BuddySpacing.s3),
@@ -420,13 +449,21 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case _PreviewPhase.awaitingApproval:
         return _Frame(
           hairline: hairline,
+          semanticLabel:
+              'Waiting for laptop approval. Approve on the laptop, then check again.',
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Row(
                 children: <Widget>[
-                  Icon(Icons.hourglass_top_outlined, size: 20, color: muted),
+                  ExcludeSemantics(
+                    child: Icon(
+                      Icons.hourglass_top_outlined,
+                      size: 20,
+                      color: muted,
+                    ),
+                  ),
                   const SizedBox(width: BuddySpacing.s2),
                   Text(
                     'Waiting for laptop approval',
@@ -440,17 +477,31 @@ class _ScreenPreviewState extends State<ScreenPreview> {
                 style: small,
               ),
               const SizedBox(height: BuddySpacing.s4),
-              ElevatedButton(
-                onPressed: _checkApproval,
-                child: const Text('Check again'),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
+                  onPressed: _checkApproval,
+                  child: const Text('Check again'),
+                ),
               ),
               const SizedBox(height: BuddySpacing.s2),
-              OutlinedButton(
-                onPressed: () => setState(() {
-                  _consentId = null;
-                  _phase = _PreviewPhase.needsConsent;
-                }),
-                child: const Text('Cancel request'),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
+                  onPressed: () => setState(() {
+                    _consentId = null;
+                    _phase = _PreviewPhase.needsConsent;
+                  }),
+                  child: const Text('Cancel request'),
+                ),
               ),
             ],
           ),
@@ -458,15 +509,19 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case _PreviewPhase.checking:
         return _Frame(
           hairline: hairline,
+          semanticLabel: 'Checking laptop approval, please wait',
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              const SizedBox(
-                width: BuddySpacing.s5,
-                height: BuddySpacing.s5,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: BuddyColors.primary,
+              Semantics(
+                label: 'Checking laptop approval, please wait',
+                child: const SizedBox(
+                  width: BuddySpacing.s5,
+                  height: BuddySpacing.s5,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: BuddyColors.primary,
+                  ),
                 ),
               ),
               const SizedBox(height: BuddySpacing.s3),
@@ -480,10 +535,14 @@ class _ScreenPreviewState extends State<ScreenPreview> {
         // instead of streaming.
         return _Frame(
           hairline: hairline,
+          semanticLabel:
+              '$_previewNoun is not on this server yet. The laptop answered not implemented.',
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Icon(_sourceIcon, size: 32, color: muted),
+              ExcludeSemantics(
+                child: Icon(_sourceIcon, size: 32, color: muted),
+              ),
               const SizedBox(height: BuddySpacing.s3),
               Text(
                 '$_previewNoun is not on this server yet',
@@ -497,9 +556,16 @@ class _ScreenPreviewState extends State<ScreenPreview> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BuddySpacing.s4),
-              OutlinedButton(
-                onPressed: _requestConsent,
-                child: const Text('Retry'),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
+                  onPressed: _requestConsent,
+                  child: const Text('Retry'),
+                ),
               ),
             ],
           ),
@@ -507,13 +573,16 @@ class _ScreenPreviewState extends State<ScreenPreview> {
       case _PreviewPhase.error:
         return _Frame(
           hairline: hairline,
+          semanticLabel: 'Preview failed: $_errorMessage',
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              Icon(
-                Icons.error_outline,
-                size: 32,
-                color: errorText,
+              ExcludeSemantics(
+                child: Icon(
+                  Icons.error_outline,
+                  size: 32,
+                  color: errorText,
+                ),
               ),
               const SizedBox(height: BuddySpacing.s3),
               Text(
@@ -528,11 +597,18 @@ class _ScreenPreviewState extends State<ScreenPreview> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: BuddySpacing.s4),
-              OutlinedButton(
-                onPressed: () => _consentId != null
-                    ? _checkApproval()
-                    : _requestConsent(),
-                child: const Text('Retry'),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size(48, 48),
+                    tapTargetSize: MaterialTapTargetSize.padded,
+                  ),
+                  onPressed: () => _consentId != null
+                      ? _checkApproval()
+                      : _requestConsent(),
+                  child: const Text('Retry'),
+                ),
               ),
             ],
           ),
@@ -549,13 +625,17 @@ class _ScreenPreviewState extends State<ScreenPreview> {
           // build (no-auto-start rule); send the user back to start.
           return _Frame(
             hairline: hairline,
+            semanticLabel:
+                'Preview session expired. The preview grant was lost. Request again to start a new approved session.',
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-                Icon(
-                  Icons.error_outline,
-                  size: 32,
-                  color: errorText,
+                ExcludeSemantics(
+                  child: Icon(
+                    Icons.error_outline,
+                    size: 32,
+                    color: errorText,
+                  ),
                 ),
                 const SizedBox(height: BuddySpacing.s3),
                 Text(
@@ -570,9 +650,16 @@ class _ScreenPreviewState extends State<ScreenPreview> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: BuddySpacing.s4),
-                OutlinedButton(
-                  onPressed: _requestConsent,
-                  child: const Text('Request preview'),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 48),
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(48, 48),
+                      tapTargetSize: MaterialTapTargetSize.padded,
+                    ),
+                    onPressed: _requestConsent,
+                    child: const Text('Request preview'),
+                  ),
                 ),
               ],
             ),
@@ -580,16 +667,19 @@ class _ScreenPreviewState extends State<ScreenPreview> {
         }
         return _Frame(
           hairline: hairline,
+          semanticLabel: previewReadyMessage(webcam: _isWebcam),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Row(
                 children: <Widget>[
-                  Icon(
-                    _sourceIconFilled,
-                    size: 20,
-                    color: BuddyColors.primary,
+                  ExcludeSemantics(
+                    child: Icon(
+                      _sourceIconFilled,
+                      size: 20,
+                      color: BuddyColors.primary,
+                    ),
                   ),
                   const SizedBox(width: BuddySpacing.s2),
                   Text(
@@ -619,6 +709,7 @@ class _ScreenPreviewState extends State<ScreenPreview> {
                   'X-Consent-Id': grantId,
                 },
                 certFingerprint: api.certFingerprint,
+                semanticLabel: previewReadyMessage(webcam: _isWebcam),
                 onRetry: _handleStreamError,
                 onStop: _stopPreview,
               ),
@@ -630,15 +721,18 @@ class _ScreenPreviewState extends State<ScreenPreview> {
 }
 
 class _Frame extends StatelessWidget {
-  const _Frame({required this.hairline, required this.child});
+  const _Frame({required this.hairline, required this.child, this.semanticLabel});
 
   final Color hairline;
   final Widget child;
 
+  /// Track C2: meaningful label for every preview state container.
+  final String? semanticLabel;
+
   @override
   Widget build(BuildContext context) {
     // One container level only — whitespace does the rest (UI_UX_GUIDE).
-    return Container(
+    final Widget frame = Container(
       width: double.infinity,
       padding: const EdgeInsets.all(BuddySpacing.s4),
       decoration: BoxDecoration(
@@ -648,6 +742,13 @@ class _Frame extends StatelessWidget {
         ),
       ),
       child: child,
+    );
+    final String? label = semanticLabel;
+    if (label == null) return frame;
+    return Semantics(
+      label: label,
+      container: true,
+      child: frame,
     );
   }
 }
