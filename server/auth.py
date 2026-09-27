@@ -260,11 +260,20 @@ class AuthState:
         Cheap fast path: a single os.stat; no YAML parse when mtime_ns is
         unchanged. On change, reloads via load_auth_settings (outside the
         write lock — load may backfill+persist which takes the lock), then
-        swaps state.settings + clears in-memory lockout dicts under
-        _SECURITY_WRITE_LOCK (a rotation is an operator act — clearing
-        lockouts is correct). Corrupt-file RuntimeError propagates (fail
-        closed → 500 internal) and leaves in-memory state + mtime
-        untouched so the next request retries.
+        swaps state.settings under _SECURITY_WRITE_LOCK. Corrupt-file
+        RuntimeError propagates (fail closed → 500 internal) and leaves
+        in-memory state + mtime untouched so the next request retries.
+
+        Token-change semantics: when the reloaded token DIFFERS (operator
+        rotation), last_activity resets to None (fresh idle window — "rotate
+        to recover" works after long idle) and all lockout dicts clear (a
+        rotation is an operator act). When only mtime changed with the SAME
+        token (e.g. a threshold edit), lockouts and last_activity are left
+        untouched — a config tweak must not amnesty an attacker's lockout.
+
+        mtime TOCTOU: a second write landing between our load and swap is
+        caught by re-statting (bounded: 2 iterations). Residual staleness is
+        at most one request — the next call's stat will differ and reload.
         """
         if self.security_path is None:
             return
@@ -275,20 +284,35 @@ class AuthState:
         if self._security_mtime_ns is not None and mtime_ns == self._security_mtime_ns:
             return
         new_settings = load_auth_settings(self.security_path)
-        with _SECURITY_WRITE_LOCK:
+        try:
+            latest_ns = os.stat(self.security_path).st_mtime_ns
+        except OSError:
+            latest_ns = mtime_ns
+        if latest_ns != mtime_ns:
+            # A second write landed mid-load: reload once more so the swap
+            # reflects the newest bytes (bounded — no retry loop).
+            new_settings = load_auth_settings(self.security_path)
             try:
                 latest_ns = os.stat(self.security_path).st_mtime_ns
             except OSError:
-                latest_ns = mtime_ns
+                pass
+        old_token = self.settings.token if self.settings is not None else None
+        with _SECURITY_WRITE_LOCK:
             self.settings = new_settings
-            if isinstance(self.failed_attempts, dict):
-                self.failed_attempts.clear()
-            else:  # pragma: no cover — legacy int shape
-                self.failed_attempts = {}  # type: ignore[assignment]
-            if isinstance(self.locked_until, dict):
-                self.locked_until.clear()
-            else:  # pragma: no cover — legacy shape
-                self.locked_until = {}  # type: ignore[assignment]
+            if new_settings.token != old_token:
+                # Operator rotated the token: fresh idle window + clear
+                # lockouts. (is_idle_expired treats last_activity=None as
+                # "no idle clock yet" — fail-open only in the sense that a
+                # brand-new token starts unfouled, which is the point.)
+                self.last_activity = None
+                if isinstance(self.failed_attempts, dict):
+                    self.failed_attempts.clear()
+                else:  # pragma: no cover — legacy int shape
+                    self.failed_attempts = {}  # type: ignore[assignment]
+                if isinstance(self.locked_until, dict):
+                    self.locked_until.clear()
+                else:  # pragma: no cover — legacy shape
+                    self.locked_until = {}  # type: ignore[assignment]
             self._security_mtime_ns = latest_ns
 
     def effective_issued_at(self) -> datetime | None:
