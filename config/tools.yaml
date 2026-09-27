@@ -29,3 +29,6 @@ agent_limits:
   max_plan_steps: 20
   max_recursion_depth: 2
   tool_timeout_seconds: 30
+memory:                       # Track B3: bounded agent-state store (own block, safe defaults)
+  path: "logs/memory.jsonl"   # repo-relative unless absolute; agent summaries only, never raw file contents
+  cap: 500                    # max entries; oldest evicted first

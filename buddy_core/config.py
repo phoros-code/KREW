@@ -86,11 +86,19 @@ class AgentLimits:
 
 
 @dataclass
+class MemoryConfig:
+    # Agent-state store (Track B3). Relative paths resolve under REPO_ROOT.
+    path: str = "logs/memory.jsonl"
+    cap: int = 500
+
+
+@dataclass
 class ToolsConfig:
     shell: ShellConfig = field(default_factory=ShellConfig)
     files: FilesConfig = field(default_factory=FilesConfig)
     web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
     agent_limits: AgentLimits = field(default_factory=AgentLimits)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def load_models_config(path: str | Path | None = None) -> ModelsConfig:
@@ -123,6 +131,21 @@ def load_tools_config(path: str | Path | None = None) -> ToolsConfig:
     files = data.get("files", {})
     web = data.get("web_search", {})
     limits = data.get("agent_limits", {})
+    mem = data.get("memory", {})
+    if not isinstance(mem, dict):
+        mem = {}
+    mem_path = mem.get("path", MemoryConfig.path)
+    if not isinstance(mem_path, str) or not mem_path.strip():
+        mem_path = MemoryConfig.path
+    try:
+        mem_cap = mem.get("cap", MemoryConfig.cap)
+        if isinstance(mem_cap, bool):
+            raise ValueError("bool cap")
+        mem_cap = int(mem_cap)
+    except (TypeError, ValueError):
+        mem_cap = MemoryConfig.cap
+    if mem_cap < 1:
+        mem_cap = MemoryConfig.cap
     return ToolsConfig(
         shell=ShellConfig(
             allowlist=list(shell.get("allowlist", [])),
@@ -140,6 +163,7 @@ def load_tools_config(path: str | Path | None = None) -> ToolsConfig:
             max_recursion_depth=int(limits.get("max_recursion_depth", 2)),
             tool_timeout_seconds=int(limits.get("tool_timeout_seconds", 30)),
         ),
+        memory=MemoryConfig(path=mem_path, cap=mem_cap),
     )
 
 
