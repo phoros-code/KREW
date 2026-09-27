@@ -35,6 +35,7 @@ class TaskNotificationContent extends StatelessWidget {
     return Semantics(
       liveRegion: true,
       label: notification.semanticLabel,
+      excludeSemantics: true,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[

@@ -55,40 +55,48 @@ class StatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final Color text = _textColor(context);
     final Color dot = _dotColor(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(
-        horizontal: BuddySpacing.s2,
-        vertical: BuddySpacing.s1,
-      ),
-      decoration: BoxDecoration(
-        color: text.withValues(alpha: 0.12),
-        borderRadius: const BorderRadius.all(
-          Radius.circular(BuddyRadii.interactive),
+    // Track C2: label includes the status text; inner dot + text are
+    // excluded so the badge announces exactly once.
+    return Semantics(
+      label: 'Task status: ${status.label}',
+      excludeSemantics: true,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: BuddySpacing.s2,
+          vertical: BuddySpacing.s1,
         ),
-        border: Border.all(color: text.withValues(alpha: 0.45)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Container(
-            width: 6,
-            height: 6,
-            decoration: BoxDecoration(
-              color: dot,
-              shape: BoxShape.circle,
-            ),
+        decoration: BoxDecoration(
+          color: text.withValues(alpha: 0.12),
+          borderRadius: const BorderRadius.all(
+            Radius.circular(BuddyRadii.interactive),
           ),
-          const SizedBox(width: BuddySpacing.s2),
-          Text(
-            status.label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.6,
-              color: text,
+          border: Border.all(color: text.withValues(alpha: 0.45)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Container(
+              width: 6,
+              height: 6,
+              decoration: BoxDecoration(
+                color: dot,
+                shape: BoxShape.circle,
+              ),
             ),
-          ),
-        ],
+            const SizedBox(width: BuddySpacing.s2),
+            Text(
+              status.label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 0.6,
+                color: text,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -86,66 +86,105 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
     // sizes the appBar slot from preferredSize and adds the system top
     // padding itself, so an inner SafeArea double-counted the notch and
     // clipped the pills. Pills align to the 56px box on every device.
+    //
+    // Track C2: text scaling clamps at 1.3 so the 56px row never overflows,
+    // and pills use Flexible + FittedBox.scaleDown + ellipsis so 320dp +
+    // scale 1.3 still fits. Outer Semantics exclude inner Icon/Text
+    // (double-announce fix: the pill label alone announces).
+    final TextScaler capped = MediaQuery.textScalerOf(
+      context,
+    ).clamp(maxScaleFactor: 1.3);
     return Container(
       height: 56,
       decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: hairline)),
       ),
       padding: const EdgeInsets.symmetric(horizontal: BuddySpacing.s4),
-      child: Row(
-        children: <Widget>[
-          _Pill(
-            color: proxText,
-            dot: proxDot,
-            icon: near ? Icons.lock_open : Icons.lock_outline,
-            label: near ? 'NEAR' : 'FAR',
-            semantic: proxSemantic,
-          ),
-          const SizedBox(width: BuddySpacing.s2),
-          _Pill(
-            color: connText,
-            dot: connDot,
-            icon: connIcon,
-            label: connLabel,
-            semantic: connSemantic,
-          ),
-          const Spacer(),
-          Semantics(
-            label: runningCount > 0
-                ? '$runningCount tasks running'
-                : 'No tasks running',
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Icon(
-                  runningCount > 0
-                      ? Icons.sync
-                      : Icons.check_circle_outline,
-                  size: 16,
-                  color: runningCount > 0
-                      ? BuddyColors.primary
-                      : (dark
-                            ? BuddyColors.inkMutedOnDark
-                            : BuddyColors.inkMutedOnLight),
+      child: MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: capped),
+        child: Row(
+          children: <Widget>[
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: _Pill(
+                  color: proxText,
+                  dot: proxDot,
+                  icon: near ? Icons.lock_open : Icons.lock_outline,
+                  label: near ? 'NEAR' : 'FAR',
+                  semantic: proxSemantic,
                 ),
-                const SizedBox(width: BuddySpacing.s2),
-                Text(
-                  runningCount > 0 ? '$runningCount RUNNING' : 'IDLE',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.6,
-                    color: runningCount > 0
-                        ? BuddyColors.primary
-                        : (dark
-                              ? BuddyColors.inkMutedOnDark
-                              : BuddyColors.inkMutedOnLight),
+              ),
+            ),
+            const SizedBox(width: BuddySpacing.s2),
+            Flexible(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: _Pill(
+                  color: connText,
+                  dot: connDot,
+                  icon: connIcon,
+                  label: connLabel,
+                  semantic: connSemantic,
+                ),
+              ),
+            ),
+            const SizedBox(width: BuddySpacing.s2),
+            Flexible(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Semantics(
+                    label: runningCount > 0
+                        ? '$runningCount tasks running'
+                        : 'No tasks running',
+                    excludeSemantics: true,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        ExcludeSemantics(
+                          child: Icon(
+                            runningCount > 0
+                                ? Icons.sync
+                                : Icons.check_circle_outline,
+                            size: 16,
+                            color: runningCount > 0
+                                ? BuddyColors.primary
+                                : (dark
+                                      ? BuddyColors.inkMutedOnDark
+                                      : BuddyColors.inkMutedOnLight),
+                          ),
+                        ),
+                        const SizedBox(width: BuddySpacing.s2),
+                        Text(
+                          runningCount > 0
+                              ? '$runningCount RUNNING'
+                              : 'IDLE',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.6,
+                            color: runningCount > 0
+                                ? BuddyColors.primary
+                                : (dark
+                                      ? BuddyColors.inkMutedOnDark
+                                      : BuddyColors.inkMutedOnLight),
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -168,8 +207,12 @@ class _Pill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Track C2: the outer label announces the pill meaning; inner icon +
+    // text are excluded so screen readers hear it exactly once
+    // (double-announce fix). Icons are decorative here.
     return Semantics(
       label: semantic ?? label,
+      excludeSemantics: true,
       child: Container(
         padding: const EdgeInsets.symmetric(
           horizontal: BuddySpacing.s2,
@@ -194,7 +237,7 @@ class _Pill extends StatelessWidget {
               ),
             ),
             const SizedBox(width: BuddySpacing.s2),
-            Icon(icon, size: 13, color: color),
+            ExcludeSemantics(child: Icon(icon, size: 13, color: color)),
             const SizedBox(width: BuddySpacing.s1),
             Text(
               label,
@@ -204,6 +247,8 @@ class _Pill extends StatelessWidget {
                 letterSpacing: 0.6,
                 color: color,
               ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ],
         ),
