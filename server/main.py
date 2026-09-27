@@ -652,12 +652,25 @@ def create_app(
     # tests redirect BOTH the tail and the auth emit to a tmp file — otherwise
     # a lone expired-token test writes into the production events.jsonl.
     state = AuthState(settings=settings, event_log=log_path)
+    # Track E1 BLOCKER-01 live rotation: the running server re-stats this
+    # path on every auth check (os.stat only) and reloads on mtime change,
+    # so `rotate_token.py` takes effect within one request (no restart).
+    # Stream loops share this same AuthState, so per-tick verify_with_code
+    # picks up rotations too. Lockouts clear on reload (operator act).
+    sec_path_for_state = Path(security_path)
+    state.security_path = sec_path_for_state
+    try:
+        state._security_mtime_ns = sec_path_for_state.stat().st_mtime_ns
+    except OSError:
+        state._security_mtime_ns = None
 
     # SECURITY.md: no unauthenticated endpoint except /health. FastAPI's
     # interactive docs + openapi.json would otherwise expose the full route
     # map (including /screen consent paths) without a token — disable them.
     app = FastAPI(title="Everyday Buddy control server", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.auth_state = state
+    app.state.security_path = sec_path_for_state
+    app.state.security_mtime_ns = state._security_mtime_ns
     # Track A3: streams config (streams: block) with module defaults.
     streams_cfg = load_streams_config(security_path)
     app.state.streams_config = streams_cfg
@@ -735,17 +748,33 @@ def create_app(
                 status_code=405,
                 content={"error": {"code": "method_not_allowed", "message": "Method not allowed"}},
             )
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        # Track E1 NOTE-02: static message — never reflect exc.detail
+        # (attacker-controlled detail must not echo into the envelope).
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"code": "http_error", "message": detail}},
+            content={"error": {"code": "http_error", "message": "HTTP error"}},
+        )
+
+    @app.exception_handler(Exception)
+    async def handle_unexpected(_: Request, exc: Exception) -> JSONResponse:  # noqa: BLE001
+        # Track E1 NOTE-02: generic fail-closed envelope for unhandled
+        # errors (e.g. corrupt-config RuntimeError from a live reload or a
+        # threshold write). Static message, no traceback, debug off.
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"code": "internal", "message": "Internal server error"}},
         )
 
     def require_auth(request: Request) -> AuthState:
+        # Track E1 BLOCKER-01: verify_with_code re-stats security.yaml
+        # (os.stat only) and reloads on mtime change — live rotation takes
+        # effect within one request, no restart. Stream loops share this
+        # AuthState so per-tick verify picks it up too.
+        # Track E1 SHOULD-03 verify-first-then-lock: no is_locked() pre-check;
+        # verify enforces/counts lockout only on failure, and a correct token
+        # clears its IP bucket even when previously locked.
         token = _bearer_token(request.headers.get("authorization"))
         ip = _client_ip(request)
-        if state.is_locked(ip):
-            raise _http_error(429, ERROR_LOCKED)
         ok, code = state.verify_with_code(token, ip)
         if ok:
             return state
@@ -795,13 +824,18 @@ def create_app(
         run, and legacy files get one backfilled on load (see
         auth.load_auth_settings). There is no "no secret" mode — an empty
         secret fails closed with 403 approval_forbidden for everyone except
-        loopback.
+        loopback (Track E1 SHOULD-01). Reads the LIVE secret from
+        state.settings (not the create_app-time closure) so a rotation or
+        operator edit takes effect without a restart.
         """
-        secret = (settings.consent_approval_secret or "").strip()
-        if not secret:
-            return auth  # legacy/test path: no secret configured
+        # Loopback (laptop itself) passes even with an empty secret — the
+        # approval tap happened on the laptop. Non-loopback requires a
+        # non-empty secret match (fail closed, SHOULD-01).
         if _is_loopback(_client_ip(request)):
             return auth
+        secret = (state.settings.consent_approval_secret or "").strip()
+        if not secret:
+            raise _http_error(403, ERROR_APPROVAL_FORBIDDEN)
         provided = request.headers.get("x-buddy-approval", "")
         # compare_digest needs same types; both str (ascii hex). A wrong
         # length just returns False (no exception) for str inputs.
@@ -889,8 +923,11 @@ def create_app(
             if sec_path.exists():
                 try:
                     loaded = yaml.safe_load(sec_path.read_text(encoding="utf-8")) or {}
-                except yaml.YAMLError:
-                    loaded = {}
+                except yaml.YAMLError as exc:
+                    # Track E1 SHOULD-07: abort with the typed corrupt-config
+                    # error (same as load_auth_settings) — never persist a
+                    # partial document over a corrupt file.
+                    raise RuntimeError(f"corrupt security config: {sec_path}: {exc}") from exc
                 if isinstance(loaded, dict):
                     data = loaded
             prox = data.get("proximity")
