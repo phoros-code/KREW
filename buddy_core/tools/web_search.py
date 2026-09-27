@@ -76,28 +76,36 @@ def parse_ddg_html(page: str) -> list[SearchHit]:
 
 
 def search(query: str, config: WebSearchConfig, max_results: int = 5) -> list[SearchHit]:
-    """Run a web search. Raises ValueError on empty query, RuntimeError on HTTP failure."""
+    """Run a web search. Raises ValueError on empty query, RuntimeError on HTTP failure.
+
+    Both backends go through the same DNS-pinned, manually-redirected
+    transport as page fetches (review follow-up: the SearXNG/DDG calls were
+    unpinned). The fixed DDG host and the operator-configured SearXNG URL
+    are validated on every call.
+    """
+    import json as _json
+
     query = query.strip()
     if not query:
         raise ValueError("Empty search query")
     if config.backend == "searxng":
         if not config.searxng_url:
             raise ValueError("searxng backend selected but searxng_url is empty")
-        resp = httpx.get(
+        body, _, _, _ = _request_with_redirects(
+            "GET",
             config.searxng_url.rstrip("/") + "/search",
             params={"q": query, "format": "json"},
-            headers=_HEADERS,
-            timeout=_TIMEOUT,
         )
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = _json.loads(body.decode("utf-8", errors="replace"))
+        except ValueError as exc:
+            raise RuntimeError(f"SearXNG returned non-JSON payload ({exc})") from None
         return [
             SearchHit(title=r.get("title", ""), url=r.get("url", ""), snippet=r.get("content", ""))
             for r in data.get("results", [])[:max_results]
         ]
-    resp = httpx.post(_DDG_URL, data={"q": query}, headers=_HEADERS, timeout=_TIMEOUT)
-    resp.raise_for_status()
-    return parse_ddg_html(resp.text)[:max_results]
+    body, _, _, _ = _request_with_redirects("POST", _DDG_URL, data={"q": query})
+    return parse_ddg_html(body.decode("utf-8", errors="replace"))[:max_results]
 
 
 def _default_port(scheme: str) -> int:
@@ -204,74 +212,120 @@ def _redirect_location(resp) -> str | None:
         return None
 
 
+@contextlib.contextmanager
+def _pinned_hop(method: str, url: str, **kwargs):
+    """Open one pinned, non-redirected streaming request; yield the response.
+
+    Validates + resolves the hop's host, pins it for the enclosed request,
+    and forces ``follow_redirects=False`` (passed explicitly so tests can
+    pin the contract) — callers follow hops manually so every hop is
+    re-validated (SHOULD-05). Transport is ``httpx.stream`` (module
+    attribute, mockable). Raises ValueError on unsafe targets.
+    """
+    try:
+        parts = urlsplit(url)
+    except ValueError as exc:
+        raise ValueError(f"Blocked URL {url!r}: unparseable ({exc})") from None
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"Blocked URL scheme {parts.scheme!r} — only http/https allowed")
+    host = parts.hostname or ""
+    if not host:
+        raise ValueError(f"Blocked URL {url!r}: no hostname")
+    port = parts.port or _default_port(parts.scheme)
+    pinned = _resolve_public_addrs(host, port)
+    kwargs["follow_redirects"] = False
+    with _pinned_getaddrinfo(host, pinned):
+        with httpx.stream(method, url, headers=_HEADERS, timeout=_TIMEOUT, **kwargs) as resp:
+            yield resp
+
+
+def _read_body_capped(resp) -> tuple[bytes, bool]:
+    """Read a streaming body under the 1MB ceiling. Returns (body, truncated)."""
+    chunks: list[bytes] = []
+    total = 0
+    truncated = False
+    for chunk in resp.iter_bytes(65536):
+        if not chunk:
+            continue
+        if total + len(chunk) > MAX_FETCH_BYTES:
+            chunks.append(chunk[: MAX_FETCH_BYTES - total])
+            total = MAX_FETCH_BYTES
+            truncated = True
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks), truncated
+
+
+def _request_with_redirects(
+    method: str, url: str, **kwargs
+) -> tuple[bytes, str, str | None, bool]:
+    """Pinned request with manual redirect following. Returns (body, final_url, encoding, truncated).
+
+    Every hop is validated + resolved + pinned; redirects convert to plain
+    GET without a body (303 semantics for all 301/302/303/307/308 — a
+    redirected POST body is never forwarded to a new host). Exceeding
+    MAX_REDIRECT_HOPS or any unsafe hop fails closed with ValueError.
+    """
+    from urllib.parse import urljoin
+
+    current_url = url
+    current_method = method
+    current_kwargs = dict(kwargs)
+    for hop in range(MAX_REDIRECT_HOPS):
+        with _pinned_hop(current_method, current_url, **current_kwargs) as resp:
+            # Final-URL check (covers transports that report a different
+            # URL than requested). Inside the pin so the check itself
+            # cannot be rebound.
+            _assert_url_safe(str(getattr(resp, "url", current_url)))
+            status = getattr(resp, "status_code", 200)
+            location = _redirect_location(resp)
+            if status in _REDIRECT_STATUSES and location:
+                if hop >= MAX_REDIRECT_HOPS - 1:
+                    raise ValueError(
+                        f"Blocked: too many redirects (exceeded {MAX_REDIRECT_HOPS} hops)"
+                    )
+                current_url = urljoin(current_url, location)
+                # Never forward a request body to a new host: redirects
+                # continue as plain GET (request-target stays in the URL).
+                current_method = "GET"
+                current_kwargs = {
+                    k: v for k, v in current_kwargs.items() if k not in ("data", "content", "files")
+                }
+                continue
+            resp.raise_for_status()
+            _assert_url_safe(str(getattr(resp, "url", current_url)))
+            body, truncated = _read_body_capped(resp)
+            return (
+                body,
+                str(getattr(resp, "url", current_url)),
+                getattr(resp, "encoding", None),
+                truncated,
+            )
+    raise ValueError(f"Blocked: too many redirects (exceeded {MAX_REDIRECT_HOPS} hops)")
+
+
 def fetch_page_text(url: str, max_chars: int = 8000) -> str:
     """Fetch a page and return visible text as PLAIN DATA (never instructions).
 
-    Track E1 SHOULD-04/05 DNS-pinned fetch: resolve+validate once per hop,
-    pin that hop's addresses via a thread-local getaddrinfo shim, and follow
-    redirects manually (follow_redirects=False, max 5 hops — every hop
-    re-resolved+validated+pinned, fail closed on violation or hop-limit).
+    Track E1 SHOULD-04/05 DNS-pinned fetch via _request_with_redirects:
+    resolve+validate once per hop, pin that hop's addresses via a
+    thread-local getaddrinfo shim, and follow redirects manually
+    (follow_redirects=False, max 5 hops — every hop re-resolved +
+    validated + pinned, fail closed on violation or hop-limit).
     The body is streamed with ``iter_bytes`` under the 1MB hard ceiling:
     over-long bodies are cut off and flagged with TRUNCATED_MARKER. Bodies
     under the ceiling behave exactly as before (same decode/clean/max_chars
     pipeline). The final URL is re-checked after the transfer.
     """
-    from urllib.parse import urljoin
-
-    current_url = url
-    for hop in range(MAX_REDIRECT_HOPS):
-        try:
-            parts = urlsplit(current_url)
-        except ValueError as exc:
-            raise ValueError(f"Blocked URL {current_url!r}: unparseable ({exc})") from None
-        if parts.scheme not in ("http", "https"):
-            raise ValueError(f"Blocked URL scheme {parts.scheme!r} — only http/https allowed")
-        host = parts.hostname or ""
-        if not host:
-            raise ValueError(f"Blocked URL {current_url!r}: no hostname")
-        port = parts.port or _default_port(parts.scheme)
-        pinned = _resolve_public_addrs(host, port)
-        with _pinned_getaddrinfo(host, pinned):
-            with httpx.stream(
-                "GET", current_url, headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=False
-            ) as resp:
-                # Final-URL check (covers transports that report a different
-                # URL than requested — e.g. a redirect simulated without a
-                # Location header). Inside the pin so the check itself cannot
-                # be rebound.
-                _assert_url_safe(str(getattr(resp, "url", current_url)))
-                status = getattr(resp, "status_code", 200)
-                location = _redirect_location(resp)
-                if status in _REDIRECT_STATUSES and location:
-                    if hop >= MAX_REDIRECT_HOPS - 1:
-                        raise ValueError(
-                            f"Blocked: too many redirects (exceeded {MAX_REDIRECT_HOPS} hops)"
-                        )
-                    current_url = urljoin(current_url, location)
-                    continue
-                resp.raise_for_status()
-                _assert_url_safe(str(getattr(resp, "url", current_url)))
-                chunks: list[bytes] = []
-                total = 0
-                truncated = False
-                for chunk in resp.iter_bytes(65536):
-                    if not chunk:
-                        continue
-                    if total + len(chunk) > MAX_FETCH_BYTES:
-                        chunks.append(chunk[: MAX_FETCH_BYTES - total])
-                        total = MAX_FETCH_BYTES
-                        truncated = True
-                        break
-                    chunks.append(chunk)
-                    total += len(chunk)
-                try:
-                    page = b"".join(chunks).decode(resp.encoding or "utf-8", errors="replace")
-                except (LookupError, ValueError):
-                    page = b"".join(chunks).decode("utf-8", errors="replace")
-        text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.DOTALL | re.IGNORECASE)
-        text = _clean(re.sub(r"<[^>]+>", " ", text))
-        text = text[:max_chars]
-        if truncated:
-            text += f"\n\n{TRUNCATED_MARKER}"
-        return text
-    raise ValueError(f"Blocked: too many redirects (exceeded {MAX_REDIRECT_HOPS} hops)")
+    body, _, encoding, truncated = _request_with_redirects("GET", url)
+    try:
+        page = body.decode(encoding or "utf-8", errors="replace")
+    except (LookupError, ValueError):
+        page = body.decode("utf-8", errors="replace")
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.DOTALL | re.IGNORECASE)
+    text = _clean(re.sub(r"<[^>]+>", " ", text))
+    text = text[:max_chars]
+    if truncated:
+        text += f"\n\n{TRUNCATED_MARKER}"
+    return text
