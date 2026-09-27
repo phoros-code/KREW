@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everyday Buddy backup rules (Track D): exclude EVERYTHING.
+     The app persists a server URL, an auth token, and a cert fingerprint in
+     encrypted storage — pairing secrets must never leave the device via cloud
+     backup or device-to-device transfer. Re-pairing after reinstall is cheap
+     by design; restoring secrets is a vulnerability. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+    </device-transfer>
+</data-extraction-rules>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Everyday Buddy network security (Track D): pin-only TLS model.
+     cleartextTrafficPermitted="false" at the base config denies ALL cleartext,
+     including in debug builds — there are NO <debug-overrides>. The app talks
+     to the laptop control server over self-signed HTTPS with SHA-256 pinning
+     enforced in Dart (BuddyApi), so the system trust anchors below are only a
+     backstop, never the authority. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
