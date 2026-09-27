@@ -102,7 +102,15 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
   http.Client? _ownedClient;
   StreamSubscription<List<int>>? _sub;
   Timer? _stallTimer;
-  List<int> _carry = <int>[];
+  // Track C4 frame bytes: contiguous byte-view buffer with a consumed
+  // prefix offset — appends copy once via setRange (owning the socket bytes
+  // is unavoidable), scans run in place with zero copies, and a complete
+  // frame copies exactly once into its own Uint8List for Image.memory.
+  // Trimming past the 8MB budget only advances the offset (no copy);
+  // compaction memmoves only when the dead prefix grows large (amortized).
+  Uint8List _buf = Uint8List(1024);
+  int _length = 0;
+  int _consumed = 0;
   Uint8List? _frame;
   bool _failed = false;
   bool _ended = false;
@@ -197,47 +205,97 @@ class _MjpegPlayerState extends State<MjpegPlayer> {
   /// Reassemble JPEG frames (SOI 0xFFD8 … EOI 0xFFD9) from the byte stream —
   /// the same framing the mjpeg_stream package scans for — then validate each
   /// candidate with the package's [MjpegPreprocessor] before painting.
+  ///
+  /// Track C4: zero-copy scan + single-copy frame. Appends own the chunk
+  /// once (setRange); completed frames allocate exactly one Uint8List.
   void _onChunk(List<int> chunk) {
     if (_failed || _ended) return;
     _armStallWatchdog();
-    _carry.addAll(chunk);
-    if (_carry.length > _maxBuffer) {
-      _carry = _carry.sublist(_carry.length - _maxBuffer);
+    _append(chunk);
+    // Bound the reassembly buffer: server frames are ≤1280px JPEGs (~1MB),
+    // so 8MB without a complete frame means the stream stopped framing —
+    // drop the oldest bytes (offset advance, no copy) instead of growing.
+    if (_length - _consumed > _maxBuffer) {
+      _consumed = _length - _maxBuffer;
+      _maybeCompact();
     }
     while (true) {
-      final int start = _frameStart(_carry, 0);
+      final int start = _frameStart(_buf, _consumed, _length);
       if (start < 0) {
         // No frame start: keep at most the last byte (a split SOI's 0xFF may
-        // dangle at the buffer end).
-        if (_carry.length > 1) _carry = _carry.sublist(_carry.length - 1);
+        // dangle at the buffer end). Offset advance, no copy.
+        if (_length - _consumed > 1) {
+          _consumed = _length - 1;
+          _maybeCompact();
+        }
         return;
       }
-      final int end = _frameEnd(_carry, start + 2);
+      final int end = _frameEnd(_buf, start + 2, _length);
       if (end < 0) {
         // Incomplete frame: drop junk before SOI, wait for more bytes.
-        if (start > 0) _carry = _carry.sublist(start);
+        if (start > _consumed) {
+          _consumed = start;
+          _maybeCompact();
+        }
         return;
       }
-      final List<int> candidate = _carry.sublist(start, end + 2);
-      _carry = _carry.sublist(end + 2);
-      if (_preprocessor.process(candidate) != null) {
+      // Single copy: frame bytes detach from the reusable buffer.
+      final int frameLen = end + 2 - start;
+      final Uint8List frameBytes = Uint8List(frameLen);
+      frameBytes.setRange(0, frameLen, _buf, start);
+      _consumed = end + 2;
+      _maybeCompact();
+      if (_preprocessor.process(frameBytes) != null) {
         if (!mounted) return;
-        setState(() => _frame = Uint8List.fromList(candidate));
+        setState(() => _frame = frameBytes);
       }
     }
   }
 
-  /// Index of the next JPEG start-of-image marker at/after [from], or -1.
-  static int _frameStart(List<int> bytes, int from) {
-    for (int i = from; i + 1 < bytes.length; i++) {
+  /// Append [chunk] to the reusable buffer, growing exponentially.
+  /// One copy (owning the socket bytes); capacity growth amortizes.
+  void _append(List<int> chunk) {
+    if (chunk.isEmpty) return;
+    final int needed = _length + chunk.length;
+    if (needed > _buf.length) {
+      int capacity = _buf.length;
+      while (capacity < needed) {
+        capacity *= 2;
+      }
+      final Uint8List grown = Uint8List(capacity);
+      if (_length > 0) {
+        grown.setRange(0, _length, _buf);
+      }
+      _buf = grown;
+    }
+    _buf.setRange(_length, _length + chunk.length, chunk);
+    _length += chunk.length;
+  }
+
+  /// Compact the dead prefix when it grows large so the buffer does not walk
+  /// forward forever. Amortized: at most one memmove per compaction.
+  void _maybeCompact() {
+    if (_consumed == 0) return;
+    if (_consumed < 65536 && _consumed < _buf.length ~/ 2) return;
+    final int live = _length - _consumed;
+    if (live > 0) {
+      _buf.setRange(0, live, _buf, _consumed);
+    }
+    _length = live;
+    _consumed = 0;
+  }
+
+  /// Index of the next JPEG start-of-image marker in [bytes[from:end]], or -1.
+  static int _frameStart(List<int> bytes, int from, int end) {
+    for (int i = from; i + 1 < end; i++) {
       if (bytes[i] == 0xFF && bytes[i + 1] == 0xD8) return i;
     }
     return -1;
   }
 
   /// Index of the end-of-image marker closing the frame, or -1.
-  static int _frameEnd(List<int> bytes, int from) {
-    for (int i = from; i + 1 < bytes.length; i++) {
+  static int _frameEnd(List<int> bytes, int from, int end) {
+    for (int i = from; i + 1 < end; i++) {
       if (bytes[i] == 0xFF && bytes[i + 1] == 0xD9) return i;
     }
     return -1;

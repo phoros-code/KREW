@@ -77,13 +77,61 @@ class TaskNotificationContent extends StatelessWidget {
   }
 }
 
+/// Track C4 SnackBar cap: at most 1 visible + 1 queued. Every new task
+/// notice dismisses the current one first ([removeCurrentSnackBar]), so the
+/// queue never grows — the newest notice is always one tap away.
+///
+/// Track C4 dedupe: the same task+status within 10s is swallowed (the SSE
+/// stream can re-deliver; the user already saw it). Keyed on
+/// taskId+kind — a started→done transition for the same task still shows.
+String _lastNoticeKey = '';
+DateTime? _lastNoticeAt;
+
+/// Test seam: reset the dedupe latch between widget tests.
+@visibleForTesting
+void resetTaskNotificationDedupe() {
+  _lastNoticeKey = '';
+  _lastNoticeAt = null;
+}
+
+/// Pure dedupe predicate — unit-tested. Returns true when [notice] duplicates
+/// the last shown key within [window] (default 10s).
+@visibleForTesting
+bool isDuplicateTaskNotification(
+  TaskNotification notification, {
+  required String lastKey,
+  required DateTime? lastAt,
+  required DateTime now,
+  Duration window = const Duration(seconds: 10),
+}) {
+  final String key = '${notification.taskId}:${notification.kind.name}';
+  if (key != lastKey || lastAt == null) return false;
+  return now.difference(lastAt) < window;
+}
+
 /// Show [notification] as a floating SnackBar. [onView] navigates to the
 /// relevant task content (the shell passes a jump to the Tasks tab).
 void showTaskNotification(
   ScaffoldMessengerState messenger, {
   required TaskNotification notification,
   required VoidCallback onView,
+  DateTime? nowForTest,
 }) {
+  final DateTime now = nowForTest ?? DateTime.now();
+  final String key = '${notification.taskId}:${notification.kind.name}';
+  if (isDuplicateTaskNotification(
+    notification,
+    lastKey: _lastNoticeKey,
+    lastAt: _lastNoticeAt,
+    now: now,
+  )) {
+    return;
+  }
+  _lastNoticeKey = key;
+  _lastNoticeAt = now;
+  // Cap: dismiss the visible SnackBar before queuing the new one — at most
+  // one visible + one queued can ever exist.
+  messenger.removeCurrentSnackBar();
   messenger.showSnackBar(
     SnackBar(
       behavior: SnackBarBehavior.floating,

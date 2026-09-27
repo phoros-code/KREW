@@ -108,12 +108,22 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
-                child: _Pill(
-                  color: proxText,
-                  dot: proxDot,
-                  icon: near ? Icons.lock_open : Icons.lock_outline,
-                  label: near ? 'NEAR' : 'FAR',
-                  semantic: proxSemantic,
+                // Track C4 motion: the ONE purposeful animation — the
+                // NEAR/FAR pill cross-fades on transition (200ms). Keyed by
+                // mode (+cause, so a cause change also fades) so the
+                // switcher sees a new child only on real transitions.
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: _Pill(
+                    key: ValueKey<String>(
+                      'prox-${near ? 'near' : 'far'}-${farReason ?? ''}',
+                    ),
+                    color: proxText,
+                    dot: proxDot,
+                    icon: near ? Icons.lock_open : Icons.lock_outline,
+                    label: near ? 'NEAR' : 'FAR',
+                    semantic: proxSemantic,
+                  ),
                 ),
               ),
             ),
@@ -192,6 +202,7 @@ class StatusHeader extends StatelessWidget implements PreferredSizeWidget {
 
 class _Pill extends StatelessWidget {
   const _Pill({
+    super.key,
     required this.color,
     required this.dot,
     required this.icon,

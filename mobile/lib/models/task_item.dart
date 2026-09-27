@@ -55,7 +55,17 @@ class TaskItem {
 }
 
 /// Folds the SSE event log into the task list. Pure logic — unit tested.
+///
+/// Track C4: bounded at [_maxItems] (200). When over budget the oldest
+/// completed/failed entries drop first; queued/running entries are NEVER
+/// dropped (a full-running map may briefly exceed the cap rather than lose
+/// live work).
 class TaskList {
+  TaskList({this.maxItems = 200});
+
+  /// Bound required by the Track C4 spec: at most 200 tasks.
+  final int maxItems;
+
   final Map<String, TaskItem> _items = {};
 
   List<TaskItem> get items {
@@ -86,6 +96,7 @@ class TaskList {
       status: TaskStatus.queued,
       updatedAt: DateTime.now(),
     );
+    _prune();
   }
 
   void applyEvent(BuddyEvent event) {
@@ -134,6 +145,31 @@ class TaskList {
           updatedAt: now,
           detail: event.error,
         );
+    }
+    _prune();
+  }
+
+  /// Track C4 prune: while over [maxItems], evict the oldest done/failed
+  /// entry (by updatedAt). Queued/running entries are never evicted — if
+  /// every entry is live the map temporarily exceeds the cap instead of
+  /// dropping work.
+  void _prune() {
+    while (_items.length > maxItems) {
+      String? oldestDoneId;
+      DateTime? oldestDoneAt;
+      for (final MapEntry<String, TaskItem> entry in _items.entries) {
+        final TaskStatus status = entry.value.status;
+        if (status == TaskStatus.done || status == TaskStatus.failed) {
+          final DateTime at = entry.value.updatedAt;
+          if (oldestDoneAt == null || at.isBefore(oldestDoneAt)) {
+            oldestDoneAt = at;
+            oldestDoneId = entry.key;
+          }
+        }
+      }
+      final String? victim = oldestDoneId;
+      if (victim == null) return;
+      _items.remove(victim);
     }
   }
 
