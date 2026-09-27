@@ -87,6 +87,23 @@ injects the last 5 into the LLM planner prompt as bounded (2000-char)
 DATA context. Missing/garbage values fall back to the defaults above —
 never unbounded.
 
+```yaml
+browser:                      # Track B5: Playwright-backed browser automation
+  allowed_domains: []         # default deny-all — operator opts in, e.g. ["example.com"]
+```
+
+**Browser rule:** empty `allowed_domains` denies every navigation (fail
+closed). Entries match exactly or by subdomain suffix (`example.com`
+covers `app.example.com`, never `notexample.com`), case-insensitively.
+Even a listed host must resolve to public addresses on every navigation
+(SSRF guard) — a listed name rebound to LAN stays denied, and a redirect
+landing off-allowlist aborts before anything acts on the page. Every
+`browser_act` call additionally pauses for laptop ops-consent, reads
+included; the pause discloses that fetched text persists in the event log.
+Non-list `allowed_domains` (or a missing block) falls back to `[]`.
+There is no `automation.enabled` key by decision: a toggle nothing reads
+is false assurance (review N4).
+
 ## `config/apps.yaml`
 
 Registry of GUI apps the agent may launch via the `launch_app` tool (phone command like "open notepad"). This is the ONLY source of launcher strings — raw LLM output never reaches `launch_app` (SECURITY.md rule 4).

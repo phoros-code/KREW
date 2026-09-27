@@ -32,3 +32,8 @@ agent_limits:
 memory:                       # Track B3: bounded agent-state store (own block, safe defaults)
   path: "logs/memory.jsonl"   # repo-relative unless absolute; agent summaries only, never raw file contents
   cap: 500                    # max entries; oldest evicted first
+browser:                      # Track B5: Playwright-backed browser automation (deny-all by default)
+  allowed_domains: []         # operator opts in per-domain, e.g. ["example.com"] (covers subdomains)
+# No automation.enabled key by decision (review N4): a toggle nothing reads
+# is false assurance. focus_check is read-only; type_text/press_keys are
+# consent-gated stubs regardless.

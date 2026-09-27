@@ -32,7 +32,7 @@ def _emit(events: list):
 
 
 def test_executor_scope_is_shell_plus_files() -> None:
-    assert EXECUTOR_TOOLS == {"shell", "read_file", "write_file", "list_dir"}
+    assert EXECUTOR_TOOLS == {"shell", "read_file", "write_file", "list_dir", "browser_act", "focus_check"}
 
 
 def test_write_file_inside_workspace(tmp_path) -> None:

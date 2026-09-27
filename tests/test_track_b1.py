@@ -422,4 +422,4 @@ def test_llm_planner_path_marks_planner_llm(monkeypatch, tmp_path) -> None:
 
 
 def test_executor_scope_unchanged() -> None:
-    assert EXECUTOR_TOOLS == {"shell", "read_file", "write_file", "list_dir"}
+    assert EXECUTOR_TOOLS == {"shell", "read_file", "write_file", "list_dir", "browser_act", "focus_check"}

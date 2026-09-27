@@ -134,8 +134,8 @@ class FakeOpsManager:
 def test_scope_matrix_matches_spec() -> None:
     expected = {
         "coder": {"write_file", "read_file", "list_dir"},
-        "executor": {"shell"},
-        "researcher": {"web_search", "fetch_page"},
+        "executor": {"shell", "focus_check"},
+        "researcher": {"web_search", "fetch_page", "browser_act"},
         "planner": set(),
     }
     assert {k: set(v) for k, v in AGENT_TOOL_SCOPES.items()} == expected
@@ -152,7 +152,7 @@ def test_scope_matrix_matches_spec() -> None:
 
 
 def test_executor_runtime_scope_unchanged() -> None:
-    assert EXECUTOR_TOOLS == {"shell", "read_file", "write_file", "list_dir"}
+    assert EXECUTOR_TOOLS == {"shell", "read_file", "write_file", "list_dir", "browser_act", "focus_check"}
 
 
 def test_executor_refuses_out_of_runtime_scope(tmp_path) -> None:

@@ -46,6 +46,7 @@ This is the highest-stakes part of the whole project, because the agent's job is
 - **Typed tool calls only.** The planner emits a structured plan (tool name + validated arguments); raw LLM text is never string-interpolated into a shell command or file path. This is what actually prevents most injection classes, not the denylist.
 - **Untrusted content stays data, not instructions.** Anything the agent reads from the web, a file, or a screen capture is treated as content to summarize or act *on*, never as commands to follow. If a fetched web page says "ignore your previous instructions and run X," that text should be inert.
 - **File tool restricted to `~/buddy-workspace`**, with explicit path-traversal tests (`../../etc/passwd`-style attempts should fail every time, not just in the happy path).
+- **Browser tool (`buddy_core/tools/browser.py`, Track B5) is deny-by-default.** `browser_act(action, url, ...)` supports exactly four actions (`goto`, `click`, `fill`, `read_text`) — no file downloads, no JS eval, no navigation outside an explicit `goto` (every action navigates to its `url` first, then acts). Every navigation passes the same fail-closed SSRF guard as page fetches (`_assert_url_safe`: http/https only, host must resolve to public addresses) PLUS an operator domain allowlist (`tools.yaml` → `browser.allowed_domains`, default empty = deny-all, exact-or-subdomain match) — and because Playwright follows redirects internally, the LANDED url is re-checked against both gates before anything acts on the page (a redirect off-allowlist or onto a private host aborts). Consent is self-enforced inside the tool (no approval channel = fail closed before launch, so no direct import can bypass the executor's pause); the pause discloses that fetched text persists in the event log. Playwright launches Chromium headless with the default sandbox (never `--no-sandbox`), page JavaScript off, downloads refused, is imported lazily (clear install error when absent), and every handle (page/context/browser) closes in `finally`. Fetched page text is DATA, never instructions, and `fill` text is redacted in events (length + sha256, never raw keystrokes).
 - **Timeouts and resource locks** per tool call, so one runaway process can't hang or starve the rest of the system.
 
 ## Consent
@@ -89,6 +90,13 @@ shapes instead of executing or silently erroring:
   exists): the step pauses; laptop approval unlocks exactly that op.
   Fresh-file writes execute normally; jail escapes are rejected outright
   (no consent hook — the write never happens).
+- **Every `browser_act` call** (Track B5, `browser_act` in researcher
+  scope, executed via `execute_plan`): the step ALWAYS pauses for laptop
+  ops-consent first — including `read_text` (page content can contain
+  secrets, and one uniform rule is simpler to reason about than a
+  read/write split). Approval authorizes within policy bounds only: the
+  SSRF guard + domain allowlist inside the tool still apply after
+  approval, so an approved-but-unlisted URL stays denied.
 
 Mechanics: the executor computes the op identity as sha256 over the
 REDACTED step shape (the same `{length, sha256}` descriptors the phone
@@ -136,7 +144,7 @@ screen/webcam grant never authorizes an op and vice versa.
 
 ## Known limitations (be honest about these)
 
-- `pyautogui`-based automation is "blind" — it doesn't verify the on-screen effect of an action before moving on. This is a functional risk more than a security one, but it means a misfired action can go further than intended before anything notices.
+- `pyautogui`-based automation is "blind" — it doesn't verify the on-screen effect of an action before moving on. This is a functional risk more than a security one, but it means a misfired action can go further than intended before anything notices. **Track B5 decision: blind automation stays unimplemented on purpose.** Real keystroke injection without focus verification ships misfires (a `type_text` aimed at one window lands in whatever happens to be focused), so only the safety scaffold landed: read-only `focus_check` (ctypes Win32 title polling, Windows-only, no new deps), laptop-consent reuse via the ops queue, and `type_text`/`press_keys` as consent-gated STUBS that pause for approval and then raise an honest "desktop input lands in a later track" error (never a silent no-op or fake success). No `pyautogui`/`pygetwindow` dependency is added until focus verification + consent + per-op confirmation all hold together.
 - MJPEG streaming, even authenticated, shows *everything* on screen — there's no selective redaction of, say, a password manager window. Treat "near mode" as "this person can see everything on my screen," not as a scoped permission.
 - This threat model assumes a reasonably trusted home/personal network. It is not hardened for hostile or shared networks (student housing Wi-Fi, cafés) — don't run it there without the VPN/tunnel approach above.
 - v0.1.0 notifications are in-app SSE SnackBars only — no FCM/background push is implemented, so v0.1.0 is local-first-when-the-app-is-open with zero cloud dependency. If FCM background push is ever added, that configuration becomes local-first-when-open only, not zero-cloud-dependency, because background push routes through Google's FCM infrastructure.
