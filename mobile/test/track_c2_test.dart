@@ -514,12 +514,12 @@ void main() {
       expect(find.text('Retry'), findsOneWidget);
     });
 
-    testWidgets('NavigationBar keeps 4 labels with tooltips', (
+    testWidgets('NavigationBar keeps 5 labels with tooltips', (
       WidgetTester tester,
     ) async {
       await tester.pumpWidget(BuddyApp(store: _FakeBootStore()));
       await tester.pumpAndSettle();
-      for (final String label in <String>['Pair', 'Chat', 'Tasks', 'Screen']) {
+      for (final String label in <String>['Pair', 'Chat', 'Tasks', 'Screen', 'Settings']) {
         expect(find.text(label), findsOneWidget, reason: label);
       }
       final List<NavigationDestination> dests = tester
@@ -527,7 +527,7 @@ void main() {
             find.byType(NavigationDestination),
           )
           .toList();
-      expect(dests, hasLength(4));
+      expect(dests, hasLength(5));
       for (final NavigationDestination d in dests) {
         expect(d.label, isNotEmpty);
         expect(d.tooltip, d.label);
