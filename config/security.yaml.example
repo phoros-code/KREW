@@ -15,6 +15,10 @@ streams:                        # Track A3: stream behaviour + consent lifetimes
   pending_ttl_seconds: 300      # unactioned consent request expires after 5 min
   grant_ttl_seconds: 900        # approved grant expires after 15 min
   max_consent_records: 256      # hard cap on consent records (fail-closed eviction)
+ops:                            # Track B3: destructive-op consent queue (own TTLs/bounds, separate scope — screen/webcam grants never authorize ops)
+  pending_ttl_seconds: 300      # unactioned op request expires after 5 min
+  grant_ttl_seconds: 600        # approved op grant expires after 10 min
+  max_consent_records: 256      # hard cap on op records (fail-closed eviction)
 tls:
   cert_path: "certs/dev-cert.pem"
   key_path: "certs/dev-key.pem"

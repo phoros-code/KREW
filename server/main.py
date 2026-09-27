@@ -7,6 +7,8 @@
 - POST /screen/consent (+ /{id}/approve, /{id}/deny, /{id}/revoke) — consent flow, near only
 - GET  /webcam   — near only + explicit consent grant (separate scope from /screen), MJPEG webcam stream
 - POST /webcam/consent (+ /{id}/approve, /{id}/deny, /{id}/revoke) — consent flow, near only
+- POST /ops/consent (+ /{id}/approve, /{id}/deny) — destructive-op consent
+  queue (Track B3): create is phone-token + near, approve/deny laptop-only
 
 Every route except /health requires the bearer dependency from server.auth.
 Proximity failures default to FAR (fail closed — SECURITY.md).
@@ -19,6 +21,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import time
@@ -67,6 +70,12 @@ ERROR_WEBCAM_CONSENT_REQUIRED = {
 }
 ERROR_WEBCAM_CONSENT_DENIED = {
     "error": {"code": "consent_denied", "message": "Webcam access request was denied"}
+}
+# Destructive-op consent envelope (Track B3): same code/shape as the
+# screen/webcam denial envelopes so phone handling is uniform — only the
+# human-readable message names the surface.
+ERROR_OPS_CONSENT_DENIED = {
+    "error": {"code": "consent_denied", "message": "Destructive operation request was denied"}
 }
 ERROR_CONSENT_NOT_FOUND = {"error": {"code": "not_found", "message": "Unknown consent request"}}
 ERROR_APPROVAL_FORBIDDEN = {
@@ -207,6 +216,29 @@ def load_streams_config(path: str | Path = SECURITY_PATH) -> dict:
         return streams.load_streams_config(src)
     except Exception:
         return streams.load_streams_config(None)
+
+
+def load_ops_config(path: str | Path = SECURITY_PATH) -> dict:
+    """Read the `ops:` block (Track B3) with module constants as defaults.
+
+    Same delegation pattern as load_streams_config: missing file, missing
+    block, or garbage values fall back to OPS_PENDING_TTL (300s),
+    OPS_GRANT_TTL (600s), OPS_MAX_CONSENT_RECORDS (256) — never
+    unlimited/zero.
+    """
+    try:
+        p = Path(path)
+        src: str | Path = p if p.exists() else (CONFIG_DIR / "security.yaml.example")
+        return streams.load_ops_config(src)
+    except Exception:
+        return streams.load_ops_config(None)
+
+
+# POST /ops/consent body validation (Track B3): the op identity the phone
+# posts must be a 64-hex sha256 (executor.op_record_for_step shape) so queue
+# entries are content-addressed and unambiguous.
+_OPS_SHA_RE = re.compile(r"[0-9a-fA-F]{64}")
+_OPS_OP_MAX_CHARS = 200
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -697,6 +729,23 @@ def create_app(
         ),
     )
     app.state.webcam_consent = webcam_consent
+    # Track B3 — third consent scope: the destructive-op queue. A screen or
+    # webcam grant never authorizes an op and vice versa. Own TTLs/bounds
+    # from the `ops:` block (pending 300s, grant 600s). The sha→consent_id
+    # index lives ON this manager (see buddy_core.agents.executor helpers)
+    # so server creation and orchestrator polling share one source of truth.
+    ops_cfg = load_ops_config(security_path)
+    app.state.ops_config = ops_cfg
+    ops_consent = streams.ConsentManager(
+        pending_ttl=float(ops_cfg.get("pending_ttl_seconds", streams.OPS_PENDING_TTL_SECONDS)),
+        grant_ttl=float(ops_cfg.get("grant_ttl_seconds", streams.OPS_GRANT_TTL_SECONDS)),
+        max_records=int(ops_cfg.get("max_consent_records", streams.OPS_MAX_CONSENT_RECORDS)),
+        target_fps=float(streams_cfg.get("target_fps", streams.TARGET_FPS)),
+        max_consecutive_failures=int(
+            streams_cfg.get("max_consecutive_failures", streams.MAX_CONSECUTIVE_FAILURES)
+        ),
+    )
+    app.state.ops_consent = ops_consent
 
     # Per-IP request throttle from config/security.yaml (review item 3).
     # Runs before auth so one noisy client can't starve the loop; 429s carry
@@ -972,7 +1021,15 @@ def create_app(
             try:
                 # Quality-first: text/API callers prefer target_model (llama3.1:8b).
                 # Voice-loop latency routing lives in voice/voice_loop.py (source="voice").
-                orchestrator.run(t, tid, "text")
+                # Track B3: the app's ops queue authorizes destructive plan
+                # steps (laptop approve/deny via POST /ops/* below); without
+                # it such steps pause fail-closed. The TypeError retry keeps
+                # older run() doubles (3-arg fakes) working — same precedent
+                # as researcher.run_research's single-arg llm_summarize.
+                try:
+                    orchestrator.run(t, tid, "text", ops_consent=ops_consent)
+                except TypeError:
+                    orchestrator.run(t, tid, "text")
             finally:
                 command_sem.release()
 
@@ -1226,6 +1283,78 @@ def create_app(
                 webcam_consent.release_stream(consent_id, stream_ip)
 
         return streams.MJPEGResponse(build_gen)
+
+    @app.post("/ops/consent")
+    def ops_consent_request(body: dict, _auth: AuthState = Depends(require_near)) -> dict:
+        """Create (or reuse) a PENDING destructive-op consent request (near-only).
+
+        Track B3: the phone posts the op it wants authorized as
+        ``{"op": "<tool-or-label>", "args_sha": "<64-hex sha256>"}`` — the
+        sha is the executor's op identity (sha256 over the redacted step
+        shape, see ``buddy_core.agents.executor.op_record_for_step``), so
+        the phone recomputes it from the SSE ``tool_call`` event without
+        ever seeing secrets. Creation is idempotent per sha: re-posting a
+        pending (or already-approved) sha returns the SAME consent_id, so
+        the orchestrator's poll and the phone's request converge on one
+        queue entry. Laptop approval/denial happens below; phone app wiring
+        is a later track (API.md documents the contract).
+        """
+        from buddy_core.agents import executor as _exec
+
+        op = body.get("op") if isinstance(body, dict) else None
+        sha = body.get("args_sha") if isinstance(body, dict) else None
+        if not isinstance(op, str) or not op.strip() or len(op) > _OPS_OP_MAX_CHARS:
+            raise _http_error(
+                400,
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "op must be a non-empty string (<=200 chars)",
+                    }
+                },
+            )
+        if not isinstance(sha, str) or _OPS_SHA_RE.fullmatch(sha.strip()) is None:
+            raise _http_error(
+                400,
+                {
+                    "error": {
+                        "code": "bad_request",
+                        "message": "args_sha must be a 64-hex sha256",
+                    }
+                },
+            )
+        op = op.strip()
+        sha = sha.strip().lower()
+        consent_id = _exec.ops_request_for_sha(ops_consent, sha, op)
+        status = ops_consent.status_of(consent_id)
+        return {"consent_id": consent_id, "status": status.value if status is not None else "pending"}
+
+    @app.post("/ops/consent/{consent_id}/approve")
+    def ops_consent_approve(consent_id: str, _auth: AuthState = Depends(require_approval)) -> dict:
+        """Laptop-only approval for a pending destructive-op request.
+
+        Same laptop-only rule as screen/webcam approve (Track A3): loopback
+        origin OR X-Buddy-Approval matching auth.consent_approval_secret —
+        phone-token-only → 403 approval_forbidden.
+        """
+        if ops_consent.approve(consent_id):
+            return {"consent_id": consent_id, "status": "approved"}
+        status = ops_consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        if status is streams.ConsentStatus.DENIED:
+            raise _http_error(409, ERROR_OPS_CONSENT_DENIED)
+        raise _http_error(400, {"error": {"code": "bad_request", "message": "Consent request is not pending"}})
+
+    @app.post("/ops/consent/{consent_id}/deny")
+    def ops_consent_deny(consent_id: str, _auth: AuthState = Depends(require_approval)) -> dict:
+        """Laptop-only denial for a pending destructive-op request."""
+        if ops_consent.deny(consent_id):
+            return {"consent_id": consent_id, "status": "denied"}
+        status = ops_consent.status_of(consent_id)
+        if status is None:
+            raise _http_error(404, ERROR_CONSENT_NOT_FOUND)
+        raise _http_error(409, {"error": {"code": "conflict", "message": "Consent already approved"}})
 
     return app
 

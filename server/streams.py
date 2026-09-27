@@ -84,6 +84,13 @@ MAX_CONSENT_RECORDS = 256
 MAX_STREAMS_PER_GRANT = 1
 MAX_STREAMS_PER_IP = 4
 
+# Track B3 — destructive-op consent queue TTLs/bounds (own `ops:` config
+# block, separate scope from screen/webcam grants). A pending destructive
+# op waits for laptop approval; the grant covers the approved op sha.
+OPS_PENDING_TTL_SECONDS = 300.0
+OPS_GRANT_TTL_SECONDS = 600.0
+OPS_MAX_CONSENT_RECORDS = 256
+
 
 def load_streams_config(path: str | Path | None = None) -> dict:
     """Read the `streams:` block (Track A3) with module constants as defaults.
@@ -132,6 +139,62 @@ def load_streams_config(path: str | Path | None = None) -> dict:
                 out["max_consecutive_failures"] = mcf
         except (TypeError, ValueError):
             pass
+        try:
+            pttl = float(raw.get("pending_ttl_seconds", out["pending_ttl_seconds"]))
+            if pttl and pttl > 0:
+                out["pending_ttl_seconds"] = pttl
+        except (TypeError, ValueError):
+            pass
+        try:
+            gttl = float(raw.get("grant_ttl_seconds", out["grant_ttl_seconds"]))
+            if gttl and gttl > 0:
+                out["grant_ttl_seconds"] = gttl
+        except (TypeError, ValueError):
+            pass
+        try:
+            mrec = int(raw.get("max_consent_records", out["max_consent_records"]))
+            if mrec >= 1:
+                out["max_consent_records"] = mrec
+        except (TypeError, ValueError):
+            pass
+        return out
+    except OSError:
+        return dict(defaults)
+
+
+def load_ops_config(path: str | Path | None = None) -> dict:
+    """Read the `ops:` block (Track B3) with module constants as defaults.
+
+    Own block, separate from `streams:` — the destructive-op queue has its
+    own lifetimes. Missing file / missing block / garbage values all fall
+    back to the current defaults — never to "unlimited" or zero. Keys:
+    pending_ttl_seconds, grant_ttl_seconds, max_consent_records.
+    """
+    defaults = {
+        "pending_ttl_seconds": OPS_PENDING_TTL_SECONDS,
+        "grant_ttl_seconds": OPS_GRANT_TTL_SECONDS,
+        "max_consent_records": OPS_MAX_CONSENT_RECORDS,
+    }
+    if path is None:
+        return dict(defaults)
+    try:
+        p = Path(path)
+        if not p.exists():
+            return dict(defaults)
+        try:
+            import yaml as _yaml  # local import: streams stays importable without yaml
+        except ImportError:
+            return dict(defaults)
+        try:
+            data = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except Exception:
+            return dict(defaults)
+        if not isinstance(data, dict):
+            return dict(defaults)
+        raw = data.get("ops", {}) or {}
+        if not isinstance(raw, dict):
+            return dict(defaults)
+        out = dict(defaults)
         try:
             pttl = float(raw.get("pending_ttl_seconds", out["pending_ttl_seconds"]))
             if pttl and pttl > 0:
