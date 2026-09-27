@@ -28,8 +28,8 @@ This is the design contract your AI coding agent reads before generating or edit
 - Monospace (for logs, tokens, command output): JetBrains Mono — `fontFamily: 'JetBrains Mono'`
 - Loading (TODO-FONTS — bundled-fonts pending): TTFs to be added under `assets/fonts/` with a `fonts:` block in `mobile/pubspec.yaml` (expected files: `SpaceGrotesk-Regular.ttf`, `SpaceGrotesk-Medium.ttf`, `SpaceGrotesk-SemiBold.ttf`, `SpaceGrotesk-Bold.ttf`, `IBMPlexSans-Regular.ttf`, `IBMPlexSans-Medium.ttf`, `IBMPlexSans-SemiBold.ttf`, `IBMPlexSans-Bold.ttf`, `JetBrainsMono-Regular.ttf`, `JetBrainsMono-Medium.ttf`, `JetBrainsMono-Bold.ttf`). Until they land, `BuddyTheme` uses `TextStyle(fontFamily)` with `fontFamilyFallback: ['Roboto']` and NO runtime CDN (`google_fonts` removed). Known deviation: without bundled TTFs the runtime falls back to Roboto — honest, offline-safe, and asserted in theme tests.
 
-**Navigation (Track C1)**
-- M3 `NavigationBar` (not M2 `BottomNavigationBar`): 4 destinations (Pair/Chat/Tasks/Screen), labels always shown, 8px indicator (`BuddyRadii.interactive`), `indicatorColor` = `primaryContainer` (light) / `primary` (dark), selected = primary/white, unselected = muted ink. Behavior identical to the old bar.
+**Navigation (Track C1, extended Track C3)**
+- M3 `NavigationBar` (not M2 `BottomNavigationBar`): 5 destinations (Pair/Chat/Tasks/Screen/Settings), labels always shown, 8px indicator (`BuddyRadii.interactive`), `indicatorColor` = `primaryContainer` (light) / `primary` (dark), selected = primary/white, unselected = muted ink. Behavior identical to the old bar.
 
 **Spacing scale**
 - Base unit: 4px. Scale: 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64. Don't invent arbitrary values outside this scale.
@@ -39,6 +39,9 @@ This is the design contract your AI coding agent reads before generating or edit
 
 **One layout primitive**
 - "Console column": every screen is a single column — a 56px status header (proximity + connection + task state), a scrollable content region, and (where input exists) a fixed bottom command bar. No sidebars, no card grids. Screens differ by what's in the content region (pairing form, chat log, task rows, video preview), never by layout shape.
+
+**Copy (Track C3 i18n scaffold)**
+- Copy lives in `lib/l10n/strings.dart`: the single string table (`AppStrings`, English only) for tab labels, all error copy, and empty states — plus every Track C3 surface (Settings, history, task log, onboarding). Screens reference constants, never inline literals, so a future ARB flow has one file to lift. Full ARB/arb flow is out of scope — the scaffold is the table + `flutter_localizations` wiring (English locale) only.
 
 ---
 
