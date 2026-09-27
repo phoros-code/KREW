@@ -866,6 +866,10 @@ class _BuddyAppState extends State<BuddyApp> with WidgetsBindingObserver {
                         streamConnected: _streamConnected,
                         onRetryStream: _connectEvents,
                         onRefresh: _api == null ? null : _handleRefresh,
+                        // Track B4: backgrounding bumps _previewSuspend —
+                        // the chat bar discards an active voice recording
+                        // on it, same signal the preview revokes on.
+                        suspendSignal: _previewSuspend,
                       ),
                       TaskListScreen(
                         tasks: _tasks,

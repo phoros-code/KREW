@@ -4,6 +4,7 @@ import '../l10n/strings.dart';
 import '../models/buddy_event.dart';
 import '../services/buddy_api.dart';
 import '../services/proximity_service.dart';
+import '../services/voice_recorder.dart';
 import '../theme/buddy_theme.dart';
 import '../widgets/command_bar.dart';
 import '../widgets/status_badge.dart';
@@ -38,6 +39,10 @@ class ChatScreen extends StatefulWidget {
     required this.streamConnected,
     required this.onRetryStream,
     this.onRefresh,
+    this.suspendSignal = 0,
+    this.voiceRecorder,
+    this.voiceTranscriber,
+    this.voicePermissionGate,
   });
 
   final BuddyApi? api;
@@ -51,6 +56,16 @@ class ChatScreen extends StatefulWidget {
   /// Track C3 pull-to-refresh: re-runs the shell reconnect + proximity
   /// config fetch. Null keeps the log static (tests).
   final Future<void> Function()? onRefresh;
+
+  /// Lifecycle suspend counter from the app shell (Track B4): forwarded to
+  /// the command bar, which discards an active voice recording on every
+  /// bump (backgrounding) — same signal the preview revokes on.
+  final int suspendSignal;
+
+  /// Track B4 voice seams, forwarded to the command bar (fakes in tests).
+  final VoiceRecorder? voiceRecorder;
+  final VoiceTranscriber? voiceTranscriber;
+  final MicPermissionGate? voicePermissionGate;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -435,6 +450,11 @@ class _ChatScreenState extends State<ChatScreen> {
                   sending: _sending,
                   disabledReason: barReason,
                   onSend: _send,
+                  api: widget.api,
+                  recorder: widget.voiceRecorder,
+                  transcriber: widget.voiceTranscriber,
+                  permissionGate: widget.voicePermissionGate,
+                  suspendSignal: widget.suspendSignal,
                 );
               },
             ),
