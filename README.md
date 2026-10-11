@@ -49,4 +49,4 @@ Track this in `CLAUDE.md`'s status section — that's the single source of truth
 
 ## License
 
-MIT or Apache 2.0 — pick one and put it in `LICENSE` before your first public commit. Both are compatible with every dependency in [`PROJECT_SPEC.md`](./PROJECT_SPEC.md)'s tech stack.
+MIT — see [`LICENSE`](./LICENSE).
